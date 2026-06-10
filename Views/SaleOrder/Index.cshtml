@@ -1,0 +1,87 @@
+@model IEnumerable<SaleOrd.Models.ViewModels.SaleOrderListVM>
+@{ ViewData["Title"] = "Sale Orders"; ViewData["ActivePage"] = "Orders"; }
+
+<div class="page-header">
+    <h5>Sale Orders</h5>
+    <a href="/SaleOrder/Create" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>New</a>
+</div>
+
+<!-- Filter bar -->
+<form method="get" class="row g-2 mb-3">
+    <div class="col-8 col-md-5">
+        <input type="text" name="search" value="@ViewBag.Search" class="form-control form-control-sm" placeholder="Search party / order no..." />
+    </div>
+    <div class="col-4 col-md-3">
+        <select name="status" class="form-select form-select-sm" onchange="this.form.submit()">
+            <option value="">All Status</option>
+            @foreach (var s in new[] { "Draft", "Pending", "Synced", "Error" })
+            {
+                <option value="@s" selected="@(ViewBag.Status == s)">@s</option>
+            }
+        </select>
+    </div>
+    <div class="col-auto">
+        <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="bi bi-search"></i></button>
+    </div>
+</form>
+
+@foreach (var o in Model)
+{
+    string statusClass = o.Status.ToString() switch
+    {
+        "Pending" => "badge-pending",
+        "Synced"  => "badge-synced",
+        "Error"   => "badge-error",
+        _         => "badge-draft"
+    };
+    <a href="/SaleOrder/Details/@o.SaleOrderId" class="text-decoration-none">
+        <div class="order-card card px-3 py-2">
+            <div class="d-flex justify-content-between align-items-center">
+                <div style="min-width:0">
+                    <div class="fw-semibold text-truncate">@o.LedgerName</div>
+                    <div class="small text-muted">@o.OrderNo · @o.OrderDate.ToString("dd MMM yyyy")</div>
+                    @if (o.Status.ToString() == "Error" && !string.IsNullOrEmpty(o.SyncError))
+                    {
+                        <div class="small text-danger text-truncate">@o.SyncError</div>
+                    }
+                </div>
+                <div class="text-end ms-2 flex-shrink-0">
+                    <div class="fw-bold">₹ @o.TotalAmount.ToString("N0")</div>
+                    <span class="badge @statusClass" style="font-size:.7rem">@o.Status</span>
+                </div>
+            </div>
+        </div>
+    </a>
+}
+
+@if (!Model.Any())
+{
+    <div class="text-center text-muted py-5">
+        <i class="bi bi-file-earmark-x" style="font-size:36px"></i>
+        <p class="mt-2 small">No orders found.</p>
+    </div>
+}
+
+<!-- Pagination -->
+@if ((int)ViewBag.Total > (int)ViewBag.PageSize)
+{
+    var pgNum = (int)ViewBag.Page;
+    var pgTotal = (int)ViewBag.Total;
+    var pgSize = (int)ViewBag.PageSize;
+    var pgCount = (int)Math.Ceiling((double)pgTotal / pgSize);
+    var prevUrl = Url.Action("Index", new { page = pgNum - 1, status = ViewBag.Status, search = ViewBag.Search });
+    var nextUrl = Url.Action("Index", new { page = pgNum + 1, status = ViewBag.Status, search = ViewBag.Search });
+    <nav class="mt-3">
+        <ul class="pagination pagination-sm justify-content-center">
+            @if (pgNum > 1)
+            {
+                <li class="page-item"><a class="page-link" href="@prevUrl">Prev</a></li>
+            }
+            <li class="page-item disabled"><span class="page-link">@pgNum / @pgCount</span></li>
+            @if (pgNum < pgCount)
+            {
+                <li class="page-item"><a class="page-link" href="@nextUrl">Next</a></li>
+            }
+        </ul>
+    </nav>
+}

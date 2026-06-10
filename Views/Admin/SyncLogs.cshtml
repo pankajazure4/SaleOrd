@@ -1,0 +1,36 @@
+@model IEnumerable<SaleOrd.Models.Domain.SyncLog>
+@{ ViewData["Title"] = "Sync Logs"; ViewData["ActivePage"] = "Admin"; }
+
+<div class="page-header">
+    <h5>Sync Logs</h5>
+</div>
+
+<form method="get" class="mb-3">
+    <select name="companyId" class="form-select form-select-sm" onchange="this.form.submit()">
+        <option value="">All Companies</option>
+        @foreach (var c in ViewBag.Companies as IEnumerable<SaleOrd.Models.Domain.Company>)
+        {
+            <option value="@c.CompanyId" selected="@(ViewBag.SelectedCompany?.ToString() == c.CompanyId.ToString())">@c.CompanyName</option>
+        }
+    </select>
+</form>
+
+<div class="list-group">
+@foreach (var log in Model)
+{
+    <div class="list-group-item py-2">
+        <div class="d-flex justify-content-between align-items-start">
+            <div>
+                <span class="badge @(log.IsSuccess ? "bg-success" : "bg-danger") me-1">@log.SyncType</span>
+                <small class="text-muted">@log.SyncedAt.ToString("dd MMM, h:mm tt")</small>
+                <div class="small mt-1">@log.Message</div>
+            </div>
+        </div>
+    </div>
+}
+</div>
+
+@if (!Model.Any())
+{
+    <div class="text-center text-muted py-4 small">No logs found.</div>
+}

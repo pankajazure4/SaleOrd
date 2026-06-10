@@ -1,0 +1,75 @@
+@model IEnumerable<SaleOrd.Models.ViewModels.UserListVM>
+@{ ViewData["Title"] = "Users"; ViewData["ActivePage"] = "Users"; }
+
+<div class="page-header">
+    <div>
+        <h5>Users</h5>
+        <div class="page-title-sub">@Model.Count() users total</div>
+    </div>
+    <a href="/Admin/CreateUser" class="btn btn-primary btn-sm">
+        <i class="bi bi-person-plus me-1"></i>Add User
+    </a>
+</div>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th class="d-none d-md-table-cell">Email</th>
+                    <th>Role</th>
+                    <th class="d-none d-md-table-cell">Companies</th>
+                    <th class="text-end">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var u in Model)
+                {
+                    string roleBadge = u.Role switch {
+                        "Admin" => "danger",
+                        "Manager" => "primary",
+                        _ => "success"
+                    };
+                    <tr class="@(!u.IsActive ? "opacity-50" : "")">
+                        <td>
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="user-avatar">@u.FullName.FirstOrDefault()</div>
+                                <div>
+                                    <div class="fw-semibold" style="font-size:13px">@u.FullName</div>
+                                    <div class="d-md-none text-muted" style="font-size:11px">@u.Email</div>
+                                    @if (!u.IsActive)
+                                    {
+                                        <span class="badge bg-secondary" style="font-size:10px">Inactive</span>
+                                    }
+                                </div>
+                            </div>
+                        </td>
+                        <td class="d-none d-md-table-cell text-muted small">@u.Email</td>
+                        <td><span class="badge bg-@roleBadge">@u.Role</span></td>
+                        <td class="d-none d-md-table-cell">
+                            @foreach (var co in u.Companies.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                            {
+                                <span class="company-chip me-1">@co.Trim()</span>
+                            }
+                        </td>
+                        <td class="text-end">
+                            <div class="d-flex justify-content-end gap-1">
+                                <a href="/Admin/EditUser/@u.Id" class="btn btn-sm btn-outline-primary">
+                                    <i class="bi bi-pencil"></i>
+                                </a>
+                                <form method="post" asp-action="ToggleUser" asp-route-id="@u.Id" class="d-inline">
+                                    @Html.AntiForgeryToken()
+                                    <button type="submit" class="btn btn-sm @(u.IsActive ? "btn-outline-danger" : "btn-outline-success")"
+                                            title="@(u.IsActive ? "Deactivate" : "Activate")">
+                                        <i class="bi bi-@(u.IsActive ? "person-slash" : "person-check")"></i>
+                                    </button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>

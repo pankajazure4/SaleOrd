@@ -1,0 +1,128 @@
+@model SaleOrd.Models.ViewModels.RoleRightsVM
+@using SaleOrd.Models.Domain
+@{
+    ViewData["Title"] = "Role Rights";
+    ViewData["ActivePage"] = "RoleRights";
+    var groups = AppPermissions.All.GroupBy(p => p.Group).ToList();
+    var roles = Model.Roles;
+}
+
+<div class="page-header mb-4">
+    <div>
+        <h5 class="mb-0">Role Rights</h5>
+        <div class="page-title-sub">Configure which forms and reports each role can access</div>
+    </div>
+</div>
+
+<form method="post" asp-action="RoleRights">
+    @Html.AntiForgeryToken()
+
+    <div class="card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-shield-lock me-2 text-primary"></i>Permissions Matrix</span>
+            <button type="submit" class="btn btn-primary btn-sm">
+                <i class="bi bi-floppy me-1"></i>Save
+            </button>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-bordered mb-0 align-middle" style="min-width:500px">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width:40%">Form / Report</th>
+                        <th class="text-center" style="width:20%">
+                            <i class="bi bi-person-badge me-1 text-primary"></i>Admin
+                        </th>
+                        @foreach (var role in roles)
+                        {
+                            <th class="text-center" style="width:20%">
+                                <i class="bi bi-person me-1 text-secondary"></i>@role
+                            </th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var group in groups)
+                    {
+                        <tr class="table-secondary">
+                            <td colspan="@(roles.Length + 2)" class="fw-semibold small text-muted py-1 px-3">
+                                <i class="bi bi-folder2 me-1"></i>@group.Key
+                            </td>
+                        </tr>
+                        @foreach (var (key, label, _) in group)
+                        {
+                            <tr>
+                                <td class="ps-4 small">@label</td>
+                                <td class="text-center">
+                                    <i class="bi bi-check-circle-fill text-success" title="Always allowed"></i>
+                                </td>
+                                @foreach (var role in roles)
+                                {
+                                    var formKey = $"p_{role}_{key.Replace(".", "_")}";
+                                    var isAllowed = Model.Matrix.ContainsKey(role) && Model.Matrix[role].ContainsKey(key) && Model.Matrix[role][key];
+                                    <td class="text-center">
+                                        <input type="checkbox"
+                                               name="@formKey"
+                                               value="1"
+                                               class="form-check-input"
+                                               style="width:18px;height:18px;cursor:pointer"
+                                               @(isAllowed ? "checked" : "") />
+                                    </td>
+                                }
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="p-3 d-flex justify-content-between align-items-center">
+            <small class="text-muted">
+                <i class="bi bi-info-circle me-1"></i>
+                Admin always has full access. Changes take effect immediately.
+            </small>
+            <button type="submit" class="btn btn-primary btn-sm">
+                <i class="bi bi-floppy me-1"></i>Save Changes
+            </button>
+        </div>
+    </div>
+
+    <!-- Quick presets -->
+    <div class="card border-0 bg-blue-soft p-3">
+        <div class="fw-semibold small mb-2"><i class="bi bi-lightning-charge text-primary me-1"></i>Quick Presets</div>
+        <div class="d-flex gap-2 flex-wrap">
+            <button type="button" class="btn btn-outline-primary btn-sm" onclick="applyPreset('Manager', true)">
+                Manager — All Access
+            </button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="applyPreset('Salesman', false)">
+                Salesman — Default
+            </button>
+            <button type="button" class="btn btn-outline-danger btn-sm" onclick="applyPreset('Salesman', 'none')">
+                Salesman — No Access
+            </button>
+        </div>
+    </div>
+</form>
+
+@section Scripts {
+<script>
+// Salesman default keys from server
+var salesmanDefaults = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(AppPermissions.SalesmanDefaults));
+
+function applyPreset(role, mode) {
+    $('input[name^="p_' + role + '_"]').each(function() {
+        var formKey = $(this).attr('name'); // e.g., p_Salesman_SaleOrder_View
+
+        if (mode === true) {
+            $(this).prop('checked', true);
+        } else if (mode === 'none') {
+            $(this).prop('checked', false);
+        } else {
+            // match formKey against defaults: permKey dots become underscores
+            var isDefault = salesmanDefaults.some(function(permKey) {
+                return formKey === 'p_' + role + '_' + permKey.replace(/\./g, '_');
+            });
+            $(this).prop('checked', isDefault);
+        }
+    });
+}
+</script>
+}

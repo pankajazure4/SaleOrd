@@ -1,0 +1,171 @@
+@model SaleOrd.Models.ViewModels.UserCreateVM
+@{ ViewData["Title"] = "Add User"; ViewData["ActivePage"] = "Users"; }
+@{
+    var companies = ViewBag.Companies as IEnumerable<SaleOrd.Models.Domain.Company> ?? Enumerable.Empty<SaleOrd.Models.Domain.Company>();
+}
+
+<div class="page-header">
+    <div class="d-flex align-items-center gap-2">
+        <a href="/Admin/Users" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left"></i></a>
+        <div>
+            <h5>Add User</h5>
+            <div class="page-title-sub">Create login and assign company access</div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-7">
+        <form method="post">
+            @Html.AntiForgeryToken()
+            <div asp-validation-summary="All" class="alert alert-danger py-2 small"></div>
+
+            <div class="card p-3 mb-3">
+                <div class="card-header px-0 pt-0 mb-3" style="border-top:none">Basic Info</div>
+                <div class="mb-3">
+                    <label asp-for="FullName" class="form-label">Full Name</label>
+                    <input asp-for="FullName" class="form-control" placeholder="e.g. Ramesh Kumar" />
+                    <span asp-validation-for="FullName" class="text-danger small"></span>
+                </div>
+                <div class="mb-3">
+                    <label asp-for="Email" class="form-label">Email (Login ID)</label>
+                    <input asp-for="Email" class="form-control" type="email" placeholder="user@company.com" />
+                    <span asp-validation-for="Email" class="text-danger small"></span>
+                </div>
+                <div class="mb-3">
+                    <label asp-for="Password" class="form-label">Password</label>
+                    <input asp-for="Password" class="form-control" type="password" placeholder="Min 6 characters" />
+                    <span asp-validation-for="Password" class="text-danger small"></span>
+                </div>
+                <div>
+                    <label asp-for="Role" class="form-label">Role</label>
+                    <div class="d-flex gap-2 flex-wrap">
+                        @foreach (var role in new[] { ("Admin","Full access","bi-shield-fill-check","text-danger"), ("Manager","View all orders","bi-person-badge","text-primary"), ("Salesman","Create & view own","bi-person","text-success") })
+                        {
+                            <label class="role-option flex-grow-1" style="cursor:pointer">
+                                <input type="radio" asp-for="Role" value="@role.Item1" class="d-none role-radio" />
+                                <div class="card p-2 text-center role-card" style="border-radius:10px;border:2px solid var(--border);transition:all .15s">
+                                    <i class="bi @role.Item3 @role.Item4 mb-1" style="font-size:20px"></i>
+                                    <div class="fw-semibold" style="font-size:12px">@role.Item1</div>
+                                    <div class="text-muted" style="font-size:10px">@role.Item2</div>
+                                </div>
+                            </label>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="card p-3 mb-3">
+                <div class="card-header px-0 pt-0 mb-3" style="border-top:none">
+                    Company Access
+                    <small class="text-muted fw-normal ms-1">— check all companies this user can access</small>
+                </div>
+                <span asp-validation-for="CompanyIds" class="text-danger small d-block mb-2"></span>
+
+                @foreach (var c in companies)
+                {
+                    <div class="d-flex align-items-center justify-content-between p-3 mb-2 rounded-3 company-access-row"
+                         style="border:1.5px solid var(--border);cursor:pointer"
+                         onclick="toggleCompany(@c.CompanyId, this)">
+                        <div class="d-flex align-items-center gap-3">
+                            <div style="width:36px;height:36px;background:#eef0ff;border-radius:10px;display:flex;align-items:center;justify-content:center">
+                                <i class="bi bi-building text-primary"></i>
+                            </div>
+                            <div>
+                                <div class="fw-semibold" style="font-size:13px">@c.CompanyName</div>
+                                <small class="text-muted">@c.TallyCompanyName · @c.TallyIp:@c.TallyPort</small>
+                            </div>
+                        </div>
+                        <div class="d-flex align-items-center gap-2">
+                            <label class="small text-muted me-1" onclick="event.stopPropagation()">Default</label>
+                            <input type="radio" asp-for="DefaultCompanyId" value="@c.CompanyId"
+                                   class="form-check-input default-radio" onclick="event.stopPropagation();markDefault(@c.CompanyId)" />
+                            <input type="checkbox" name="CompanyIds" value="@c.CompanyId"
+                                   class="form-check-input company-checkbox" id="co_@c.CompanyId"
+                                   onclick="event.stopPropagation();syncDefault(this, @c.CompanyId)" />
+                        </div>
+                    </div>
+                }
+            </div>
+
+            <button type="submit" class="btn btn-primary w-100 py-2 fw-semibold">
+                <i class="bi bi-person-plus me-1"></i>Create User
+            </button>
+        </form>
+    </div>
+
+    <div class="col-lg-5 d-none d-lg-block">
+        <div class="card p-3" style="position:sticky;top:80px">
+            <div class="fw-semibold mb-3">Role Permissions</div>
+            <div class="small">
+                <div class="d-flex align-items-start gap-2 mb-2">
+                    <span class="badge bg-danger">Admin</span>
+                    <span class="text-muted">Manage companies, users, view sync logs, all orders across all companies</span>
+                </div>
+                <div class="d-flex align-items-start gap-2 mb-2">
+                    <span class="badge bg-primary">Manager</span>
+                    <span class="text-muted">View all orders in assigned companies, no admin panel access</span>
+                </div>
+                <div class="d-flex align-items-start gap-2">
+                    <span class="badge bg-success">Salesman</span>
+                    <span class="text-muted">Create orders and view only own orders</span>
+                </div>
+            </div>
+            <hr />
+            <div class="fw-semibold mb-2">Selected Access</div>
+            <div id="accessSummary" class="text-muted small">No companies selected</div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+// Role card highlight
+document.querySelectorAll('.role-radio').forEach(r => {
+    r.addEventListener('change', () => {
+        document.querySelectorAll('.role-card').forEach(c => c.style.borderColor = 'var(--border)');
+        r.closest('.role-option').querySelector('.role-card').style.borderColor = 'var(--primary)';
+    });
+});
+// Pre-select first role
+var firstRadio = document.querySelector('.role-radio');
+if (firstRadio) { firstRadio.checked = true; firstRadio.dispatchEvent(new Event('change')); }
+
+function toggleCompany(id, row) {
+    var cb = document.getElementById('co_' + id);
+    cb.checked = !cb.checked;
+    row.style.borderColor = cb.checked ? 'var(--primary)' : 'var(--border)';
+    row.style.background  = cb.checked ? '#f0f2ff' : '';
+    if (!cb.checked) {
+        var dr = document.querySelector('input[name="DefaultCompanyId"][value="'+id+'"]');
+        if (dr) dr.checked = false;
+    }
+    updateSummary();
+}
+
+function syncDefault(cb, id) {
+    var row = cb.closest('.company-access-row');
+    row.style.borderColor = cb.checked ? 'var(--primary)' : 'var(--border)';
+    row.style.background  = cb.checked ? '#f0f2ff' : '';
+    if (!cb.checked) {
+        var dr = document.querySelector('input[name="DefaultCompanyId"][value="'+id+'"]');
+        if (dr) dr.checked = false;
+    }
+    updateSummary();
+}
+
+function markDefault(id) {
+    var cb = document.getElementById('co_' + id);
+    if (!cb.checked) { cb.checked = true; syncDefault(cb, id); }
+}
+
+function updateSummary() {
+    var checked = [...document.querySelectorAll('.company-checkbox:checked')]
+        .map(cb => cb.closest('.company-access-row').querySelector('.fw-semibold').textContent);
+    var el = document.getElementById('accessSummary');
+    if (el) el.innerHTML = checked.length
+        ? checked.map(n => '<span class="company-chip me-1 mb-1">'+n+'</span>').join('')
+        : '<span class="text-muted">No companies selected</span>';
+}
+</script>
+}

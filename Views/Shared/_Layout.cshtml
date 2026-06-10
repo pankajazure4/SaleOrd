@@ -1,0 +1,232 @@
+@inject SaleOrd.Services.PermissionService _permSvc
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>@ViewData["Title"] - SaleOrder</title>
+    <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css" />
+    <link rel="stylesheet" href="~/css/app.css" asp-append-version="true" />
+    @await RenderSectionAsync("Styles", required: false)
+</head>
+<body>
+    <!-- Site Loader Overlay -->
+    <div id="siteLoader" class="site-loader-overlay">
+        <div class="site-loader-spinner">
+            <div class="spinner-ring"></div>
+            <div class="spinner-logo">
+                <i class="bi bi-bag-check-fill"></i>
+            </div>
+            <div class="spinner-text">SaleOrder</div>
+        </div>
+    </div>
+
+@if (User.Identity?.IsAuthenticated == true)
+{
+    var activePage = ViewData["ActivePage"]?.ToString() ?? "";
+
+    string _userRole;
+    if (User.IsInRole(SaleOrd.Models.Domain.AppRoles.Admin)) _userRole = SaleOrd.Models.Domain.AppRoles.Admin;
+    else if (User.IsInRole(SaleOrd.Models.Domain.AppRoles.Manager)) _userRole = SaleOrd.Models.Domain.AppRoles.Manager;
+    else _userRole = SaleOrd.Models.Domain.AppRoles.Salesman;
+    var _perms = await _permSvc.GetAllowedKeysAsync(_userRole);
+
+    <!-- ── Top bar ── -->
+    <header class="topbar">
+        <button class="topbar-toggle" id="sidebarToggle" onclick="toggleSidebar()">
+            <i class="bi bi-list"></i>
+        </button>
+        <a href="/Dashboard" class="topbar-brand">
+            <i class="bi bi-bag-check-fill me-1"></i><span class="brand-text">SaleOrder</span>
+        </a>
+
+        <!-- Company switcher (ViewComponent) -->
+        <div class="me-2 flex-shrink-0">
+            @await Component.InvokeAsync("CompanySwitcher")
+        </div>
+
+        <div class="d-flex align-items-center gap-2 flex-shrink-0">
+            <div class="d-none d-md-flex align-items-center gap-1 text-white-50 small">
+                <i class="bi bi-person-circle"></i>
+                <span>@User.Identity!.Name</span>
+            </div>
+            <form asp-controller="Account" asp-action="Logout" method="post" class="d-inline">
+                @Html.AntiForgeryToken()
+                <button class="btn btn-sm btn-outline-light py-1 px-2" style="border-radius:8px;" title="Logout">
+                    <i class="bi bi-box-arrow-right"></i>
+                </button>
+            </form>
+        </div>
+    </header>
+
+    <!-- ── Sidebar overlay (mobile tap-to-close) ── -->
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+
+    <!-- ── Sidebar ── -->
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-section">
+            @if (_perms.Contains(SaleOrd.Models.Domain.AppPermissions.Dashboard))
+            {
+                <a href="/Dashboard" class="sidebar-link @(activePage == "Dashboard" ? "active" : "")">
+                    <i class="bi bi-speedometer2"></i>Dashboard
+                </a>
+            }
+            @if (_perms.Contains(SaleOrd.Models.Domain.AppPermissions.SaleOrderCreate))
+            {
+                <a href="/SaleOrder/Create" class="sidebar-link @(activePage == "NewOrder" ? "active" : "")" style="color:var(--primary)">
+                    <i class="bi bi-plus-circle-fill"></i>New Sale Order
+                </a>
+            }
+            @if (_perms.Contains(SaleOrd.Models.Domain.AppPermissions.SaleOrderView))
+            {
+                <a href="/SaleOrder" class="sidebar-link @(activePage == "Orders" ? "active" : "")">
+                    <i class="bi bi-file-earmark-text"></i>Sale Orders
+                </a>
+            }
+        </div>
+
+        @{
+            bool _showMasters = _perms.Contains(SaleOrd.Models.Domain.AppPermissions.MastersParties)
+                             || _perms.Contains(SaleOrd.Models.Domain.AppPermissions.MastersItems);
+        }
+        @if (_showMasters)
+        {
+            <div class="sidebar-section">
+                <div class="sidebar-label">Masters</div>
+                @if (_perms.Contains(SaleOrd.Models.Domain.AppPermissions.MastersParties))
+                {
+                    <a href="/Masters/Parties" class="sidebar-link @(activePage == "Parties" ? "active" : "")">
+                        <i class="bi bi-people"></i>Parties
+                    </a>
+                }
+                @if (_perms.Contains(SaleOrd.Models.Domain.AppPermissions.MastersItems))
+                {
+                    <a href="/Masters/Items" class="sidebar-link @(activePage == "Items" ? "active" : "")">
+                        <i class="bi bi-box-seam"></i>Stock Items
+                    </a>
+                }
+            </div>
+        }
+
+        @{
+            bool _showReports = _perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsSummary)
+                             || _perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsPartyWise)
+                             || _perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsDayWise);
+        }
+        @if (_showReports)
+        {
+            <div class="sidebar-section">
+                <a href="/Reports" class="sidebar-link @(activePage == "Reports" ? "active" : "")">
+                    <i class="bi bi-bar-chart-line"></i>Reports
+                </a>
+            </div>
+        }
+
+        @if (User.IsInRole("Admin"))
+        {
+            <div class="sidebar-section">
+                <div class="sidebar-label">Admin</div>
+                <a href="/Admin/Companies" class="sidebar-link @(activePage == "Companies" ? "active" : "")">
+                    <i class="bi bi-building"></i>Companies
+                </a>
+                <a href="/Admin/Users" class="sidebar-link @(activePage == "Users" ? "active" : "")">
+                    <i class="bi bi-people-fill"></i>Users
+                </a>
+                <a href="/Admin/RoleRights" class="sidebar-link @(activePage == "RoleRights" ? "active" : "")">
+                    <i class="bi bi-shield-lock"></i>Role Rights
+                </a>
+                <a href="/Admin/UserActivity" class="sidebar-link @(activePage == "UserActivity" ? "active" : "")">
+                    <i class="bi bi-activity"></i>User Activity
+                </a>
+                <a href="/Admin/SyncLogs" class="sidebar-link @(activePage == "SyncLogs" ? "active" : "")">
+                    <i class="bi bi-arrow-repeat"></i>Sync Logs
+                </a>
+                <a href="/Settings" class="sidebar-link @(activePage == "Settings" ? "active" : "")">
+                    <i class="bi bi-sliders"></i>Settings
+                </a>
+            </div>
+        }
+    </nav>
+
+    <!-- ── Main content ── -->
+    <div class="app-body">
+        <main class="main-content">
+            @RenderBody()
+        </main>
+    </div>
+
+    <!-- ── Bottom nav (mobile only) ── -->
+    <nav class="bottom-nav d-flex d-lg-none">
+        <a href="/Dashboard" class="bottom-nav-item @(activePage == "Dashboard" ? "active" : "")">
+            <i class="bi bi-speedometer2"></i><span>Home</span>
+        </a>
+        <a href="/SaleOrder" class="bottom-nav-item @(activePage == "Orders" ? "active" : "")">
+            <i class="bi bi-file-earmark-text"></i><span>Orders</span>
+        </a>
+        <a href="/SaleOrder/Create" class="bottom-nav-item create-btn">
+            <i class="bi bi-plus-lg"></i>
+        </a>
+        <a href="/Reports" class="bottom-nav-item @(activePage == "Reports" ? "active" : "")">
+            <i class="bi bi-bar-chart"></i><span>Reports</span>
+        </a>
+        <a href="/Masters/Parties" class="bottom-nav-item @(activePage == "Parties" ? "active" : "")">
+            <i class="bi bi-people"></i><span>Masters</span>
+        </a>
+    </nav>
+}
+else
+{
+    @RenderBody()
+}
+
+<script src="~/lib/jquery/dist/jquery.min.js"></script>
+<script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
+<script src="~/js/site.js" asp-append-version="true"></script>
+<script>
+toastr.options = { "positionClass": "toast-top-right", "timeOut": 3000, "progressBar": true };
+function showToast(type, msg, title) {
+    toastr[type === 'danger' ? 'error' : type](msg, title || '');
+}
+</script>
+@if (TempData["Success"] != null)
+{
+    <script>showToast('success', "@Html.Raw(System.Text.Encodings.Web.JavaScriptEncoder.Default.Encode(TempData["Success"]!.ToString()!))");</script>
+}
+@if (TempData["Error"] != null)
+{
+    <script>showToast('danger', "@Html.Raw(System.Text.Encodings.Web.JavaScriptEncoder.Default.Encode(TempData["Error"]!.ToString()!))");</script>
+}
+<script>
+function toggleSidebar() {
+    var s = document.getElementById('sidebar'), o = document.getElementById('sidebarOverlay');
+    s.classList.toggle('open'); o.classList.toggle('show');
+}
+function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarOverlay').classList.remove('show');
+}
+</script>
+@await RenderSectionAsync("Scripts", required: false)
+<script>
+    // Fade out loader on window load
+    window.addEventListener('load', function() {
+        var loader = document.getElementById('siteLoader');
+        if (loader) {
+            loader.classList.add('fade-out');
+            setTimeout(function() { loader.style.display = 'none'; }, 300);
+        }
+    });
+    // Fallback: hide loader after 3 seconds anyway to avoid stuck loading screen
+    setTimeout(function() {
+        var loader = document.getElementById('siteLoader');
+        if (loader && !loader.classList.contains('fade-out')) {
+            loader.classList.add('fade-out');
+            setTimeout(function() { loader.style.display = 'none'; }, 300);
+        }
+    }, 3000);
+</script>
+</body>
+</html>

@@ -1,0 +1,156 @@
+@using SaleOrd.Models.Domain
+@model List<UserActivity>
+@{ ViewData["Title"] = "User Activity"; }
+
+@functions {
+    static string ActionBadgeColor(string action) => action switch {
+        "Login"         => "success",
+        "Logout"        => "secondary",
+        "CreateOrder"   => "primary",
+        "EditOrder"     => "warning text-dark",
+        "CancelOrder"   => "danger",
+        "PrintOrder"    => "info",
+        "SyncTriggered" => "dark",
+        _               => "secondary"
+    };
+}
+
+<div class="page-header d-flex justify-content-between align-items-center">
+    <h5>User Activity Log</h5>
+    <span class="badge bg-secondary">@ViewBag.Total records</span>
+</div>
+
+<!-- Filters -->
+<div class="card p-3 mb-3">
+    <form method="get" class="row g-2 align-items-end">
+        <div class="col-6 col-md-3">
+            <label class="form-label small fw-semibold">User</label>
+            <select name="userId" class="form-select form-select-sm">
+                <option value="">All Users</option>
+                @foreach (dynamic u in ViewBag.Users)
+                {
+                    if (ViewBag.UserId != null && u.Id == ViewBag.UserId)
+                    {
+                        <option value="@u.Id" selected>@u.FullName</option>
+                    }
+                    else
+                    {
+                        <option value="@u.Id">@u.FullName</option>
+                    }
+                }
+            </select>
+        </div>
+        <div class="col-6 col-md-2">
+            <label class="form-label small fw-semibold">Action</label>
+            <select name="action" class="form-select form-select-sm">
+                <option value="">All Actions</option>
+                @foreach (string a in ViewBag.Actions)
+                {
+                    if (ViewBag.Action == a)
+                    {
+                        <option value="@a" selected>@a</option>
+                    }
+                    else
+                    {
+                        <option value="@a">@a</option>
+                    }
+                }
+            </select>
+        </div>
+        <div class="col-6 col-md-2">
+            <label class="form-label small fw-semibold">From</label>
+            <input type="date" name="from" class="form-control form-control-sm" value="@ViewBag.From" />
+        </div>
+        <div class="col-6 col-md-2">
+            <label class="form-label small fw-semibold">To</label>
+            <input type="date" name="to" class="form-control form-control-sm" value="@ViewBag.To" />
+        </div>
+        <div class="col-12 col-md-3 d-flex gap-2">
+            <button type="submit" class="btn btn-sm btn-primary flex-fill"><i class="bi bi-search me-1"></i>Filter</button>
+            <a href="/Admin/UserActivity" class="btn btn-sm btn-outline-secondary"><i class="bi bi-x-lg"></i></a>
+        </div>
+    </form>
+</div>
+
+@{
+    int total2 = ViewBag.Total, page2 = ViewBag.Page, pageSize2 = ViewBag.PageSize;
+    int totalPages2 = (int)Math.Ceiling((double)total2 / pageSize2);
+    string qBase2 = $"userId={ViewBag.UserId}&action={ViewBag.Action}&from={ViewBag.From}&to={ViewBag.To}";
+}
+
+@if (!Model.Any())
+{
+    <div class="alert alert-info">No activity records found for the selected filters.</div>
+}
+else
+{
+    <div class="table-responsive d-none d-md-block">
+        <table class="table table-sm table-hover table-bordered align-middle small">
+            <thead class="table-light">
+                <tr>
+                    <th>Date &amp; Time</th>
+                    <th>User</th>
+                    <th>Role</th>
+                    <th>Action</th>
+                    <th>Entity</th>
+                    <th>Description</th>
+                    <th>IP</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var a in Model)
+                {
+                    <tr>
+                        <td class="text-nowrap">@a.CreatedAt.ToString("dd-MMM-yy HH:mm")</td>
+                        <td>@a.UserName</td>
+                        <td><span class="badge bg-@(a.Role == AppRoles.Admin ? "danger" : a.Role == AppRoles.Manager ? "warning text-dark" : "info")">@a.Role</span></td>
+                        <td>
+                            <span class="badge bg-@ActionBadgeColor(a.Action)">@a.Action</span>
+                        </td>
+                        <td class="text-muted">
+                            @if (a.EntityType != null && a.EntityId.HasValue)
+                            {
+                                <text>@a.EntityType #@a.EntityId</text>
+                            }
+                        </td>
+                        <td>@a.Description</td>
+                        <td class="text-muted">@a.IPAddress</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <div class="d-block d-md-none">
+        @foreach (var a in Model)
+        {
+            <div class="card mb-2 shadow-sm">
+                <div class="card-body p-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="badge bg-@ActionBadgeColor(a.Action)">@a.Action</span>
+                        <small class="text-muted">@a.CreatedAt.ToString("dd-MMM HH:mm")</small>
+                    </div>
+                    <div class="fw-semibold">@a.UserName <span class="badge bg-secondary ms-1 fw-normal">@a.Role</span></div>
+                    @if (a.Description != null)
+                    {
+                        <div class="text-muted small mt-1">@a.Description</div>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    @if (totalPages2 > 1)
+    {
+        <nav class="mt-3">
+            <ul class="pagination pagination-sm justify-content-center flex-wrap">
+                @for (int p = 1; p <= totalPages2; p++)
+                {
+                    <li class="page-item @(p == page2 ? "active" : "")">
+                        <a class="page-link" href="?@qBase2&page=@p">@p</a>
+                    </li>
+                }
+            </ul>
+        </nav>
+    }
+}

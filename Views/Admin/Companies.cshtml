@@ -1,0 +1,51 @@
+@model IEnumerable<SaleOrd.Models.Domain.Company>
+@{ ViewData["Title"] = "Companies"; ViewData["ActivePage"] = "Companies"; }
+
+<div class="page-header">
+    <div>
+        <h5>Companies</h5>
+        <div class="page-title-sub">@Model.Count() companies · Tally connections in <a href="/Settings">Settings</a></div>
+    </div>
+    <a href="/Admin/CreateCompany" class="btn btn-primary btn-sm">
+        <i class="bi bi-plus-lg me-1"></i>Add Company
+    </a>
+</div>
+
+@foreach (var c in Model)
+{
+    <div class="card mb-2 p-3">
+        <div class="d-flex justify-content-between align-items-center">
+            <div class="d-flex align-items-center gap-3">
+                <div class="company-avatar">@c.CompanyName[0]</div>
+                <div>
+                    <div class="fw-semibold">@c.CompanyName</div>
+                    <small class="text-muted">Tally: @c.TallyCompanyName</small>
+                    <span class="badge ms-2 @(c.IsActive ? "bg-success" : "bg-secondary")">
+                        @(c.IsActive ? "Active" : "Inactive")
+                    </span>
+                    @if (c.LastMasterSyncAt.HasValue)
+                    {
+                        <small class="text-muted ms-2">
+                            <i class="bi bi-arrow-repeat me-1"></i>@c.LastMasterSyncAt.Value.ToString("dd MMM, h:mm tt")
+                        </small>
+                    }
+                    else
+                    {
+                        <small class="text-muted ms-2">Never synced</small>
+                    }
+                </div>
+            </div>
+            <a href="/Admin/EditCompany/@c.CompanyId" class="btn btn-sm btn-outline-primary">
+                <i class="bi bi-pencil me-1"></i>Edit
+            </a>
+        </div>
+    </div>
+}
+
+@if (!Model.Any())
+{
+    <div class="text-center text-muted py-5">
+        <i class="bi bi-building" style="font-size:36px;opacity:.3"></i>
+        <p class="mt-2 small">No companies yet. <a href="/Admin/CreateCompany">Add one</a></p>
+    </div>
+}

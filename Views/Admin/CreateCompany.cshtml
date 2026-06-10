@@ -1,0 +1,53 @@
+@model SaleOrd.Models.ViewModels.CompanyVM
+@{ ViewData["Title"] = Model.CompanyId > 0 ? "Edit Company" : "Add Company"; ViewData["ActivePage"] = "Companies"; }
+
+<div class="page-header">
+    <div class="d-flex align-items-center gap-2">
+        <a href="/Admin/Companies" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left"></i></a>
+        <div>
+            <h5>@(Model.CompanyId > 0 ? "Edit Company" : "Add Company")</h5>
+            <div class="page-title-sub">Basic info — configure Tally connection in <a href="/Settings">Settings</a></div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-6">
+        <form method="post">
+            @Html.AntiForgeryToken()
+            <input asp-for="CompanyId" type="hidden" />
+            <div asp-validation-summary="All" class="alert alert-danger py-2 small mb-3"></div>
+
+            <div class="card p-3 mb-3">
+                <div class="mb-3">
+                    <label asp-for="CompanyName" class="form-label">Company Display Name</label>
+                    <input asp-for="CompanyName" class="form-control" placeholder="e.g. Warna Krushna Pvt Ltd" />
+                    <span asp-validation-for="CompanyName" class="text-danger small"></span>
+                </div>
+                <div class="mb-3">
+                    <label asp-for="TallyCompanyName" class="form-label">
+                        Tally Company Name <span class="text-muted fw-normal">(exact name as it appears in Tally)</span>
+                    </label>
+                    <input asp-for="TallyCompanyName" class="form-control" placeholder="Must match exactly" />
+                    <span asp-validation-for="TallyCompanyName" class="text-danger small"></span>
+                </div>
+                <div class="form-check">
+                    <input asp-for="IsActive" class="form-check-input" type="checkbox" />
+                    <label asp-for="IsActive" class="form-check-label">Active</label>
+                </div>
+            </div>
+
+            <div class="form-actions">
+                <a href="/Admin/Companies" class="btn btn-outline-secondary"><i class="bi bi-x me-1"></i>Cancel</a>
+                <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>Save Company</button>
+            </div>
+        </form>
+    </div>
+    <div class="col-lg-6 d-none d-lg-block">
+        <div class="card p-3 border-0 bg-blue-soft">
+            <div class="fw-semibold mb-2 small"><i class="bi bi-lightbulb text-primary me-1"></i>Tally Connection</div>
+            <p class="small text-muted mb-2">IP address and port for this company's Tally instance are managed in <a href="/Settings"><strong>Settings → Tally Connections</strong></a>.</p>
+            <p class="small text-muted mb-0">You can set a global default in <code>appsettings.json</code> and override per-company from Settings.</p>
+        </div>
+    </div>
+</div>

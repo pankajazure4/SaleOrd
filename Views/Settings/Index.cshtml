@@ -1,0 +1,161 @@
+@{
+    ViewData["Title"] = "Settings";
+    ViewData["ActivePage"] = "Settings";
+    var companies = ViewBag.Companies as IEnumerable<SaleOrd.Models.Domain.Company> ?? Enumerable.Empty<SaleOrd.Models.Domain.Company>();
+    var selectedCompanyId = (int)(ViewBag.SelectedCompanyId ?? 0);
+}
+@Html.AntiForgeryToken()
+
+<div class="page-header mb-4">
+    <div>
+        <h5 class="mb-0">Settings</h5>
+        <div class="page-title-sub">Global configuration</div>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-7">
+
+        <div class="card mb-3">
+            <div class="card-header">
+                <i class="bi bi-plug me-2 text-primary"></i>Tally Connection
+            </div>
+            <div class="p-3">
+                <label class="form-label">Tally URL</label>
+                <div class="input-group mb-2">
+                    <span class="input-group-text"><i class="bi bi-link-45deg"></i></span>
+                    <input type="text" id="tallyUrl" class="form-control"
+                           value="@ViewBag.TallyUrl"
+                           placeholder="http://localhost:9000" />
+                </div>
+                <div class="text-muted mb-3" style="font-size:12px">
+                    Format: <code>http://IP:Port</code> - e.g. <code>http://192.168.1.10:9000</code><br />
+                    Default from appsettings.json: <code>@ViewBag.DefaultUrl</code>
+                </div>
+                <div class="d-flex gap-2 flex-wrap">
+                    <button class="btn btn-primary btn-sm" type="button" onclick="saveTallyUrl()">
+                        <i class="bi bi-floppy me-1"></i>Save
+                    </button>
+                    <button class="btn btn-outline-primary btn-sm" type="button" onclick="checkStatus()">
+                        <i class="bi bi-wifi me-1"></i>Check Status
+                    </button>
+                    <a href="/Settings/RawXml" target="_blank" class="btn btn-outline-secondary btn-sm" title="View raw Tally XML response - useful for debugging">
+                        <i class="bi bi-code-slash me-1"></i>Raw XML
+                    </a>
+                </div>
+                <div id="openCompanyInfo" class="mt-2 small fw-semibold" style="display:none"></div>
+            </div>
+        </div>
+
+        <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-trash3 me-2 text-danger"></i>Delete Synced Data
+                </div>
+            <div class="p-3">
+                <div class="mb-2">
+                    <label class="form-label">Company</label>
+                    <select id="flushCompanyId" class="form-select">
+                        @foreach (var c in companies)
+                        {
+                            <option value="@c.CompanyId">
+                                @c.CompanyName
+                            </option>
+                        }
+                    </select>
+                </div>
+                <div class="text-muted small mb-3">
+                    This will delete synced data, synced orders, and sync logs for the selected company.
+                </div>
+                <button class="btn btn-outline-danger btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#flushModal" @(companies.Any() ? "" : "disabled")>
+                    <i class="bi bi-trash3 me-1"></i>Delete Data
+                </button>
+            </div>
+        </div>
+
+    </div>
+    <div class="col-lg-5 d-none d-lg-block">
+        <div class="card p-3 border-0 bg-blue-soft">
+            <div class="fw-semibold mb-2 small"><i class="bi bi-info-circle text-primary me-1"></i>How it works</div>
+            <ul class="small text-muted mb-0 ps-3">
+                <li class="mb-1">One Tally URL connects all companies.</li>
+                <li class="mb-1">Tally Prime must have HTTP Server enabled (F12 - Configure - Advanced).</li>
+                <li class="mb-1">Check Status shows which companies are currently open in Tally.</li>
+                <li>Leave blank to use the default from appsettings.json.</li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="flushModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Delete synced data?</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">This will permanently remove synced data, synced orders, and logs for the selected company.</p>
+                <p class="small text-muted mb-0">Make sure you picked the correct company before continuing.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <form method="post" asp-action="FlushCompanyData" class="m-0">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="companyId" id="flushCompanyIdInput" value="@selectedCompanyId" />
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-trash3 me-1"></i>Yes, Delete
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+var csrf = $('[name=__RequestVerificationToken]').val();
+
+$('#flushCompanyId').val('@selectedCompanyId');
+$('#flushCompanyIdInput').val('@selectedCompanyId');
+
+$('#flushCompanyId').on('change', function () {
+    $('#flushCompanyIdInput').val($(this).val());
+});
+
+function saveTallyUrl() {
+    var url = $('#tallyUrl').val().trim();
+    $.post('/Settings/SaveTallyUrl', { tallyUrl: url, __RequestVerificationToken: csrf }, function(r) {
+        showToast(r.success ? 'success' : 'danger', r.message, r.success ? 'Saved' : 'Error');
+    });
+}
+
+function checkStatus() {
+    var url = $('#tallyUrl').val().trim() || '@ViewBag.DefaultUrl';
+    $.post('/Settings/CheckStatus', { tallyUrl: url, __RequestVerificationToken: csrf }, function(r) {
+        var type = r.status === 'warning' ? 'warning' : (r.reachable ? 'success' : 'danger');
+        var title = r.status === 'warning' ? 'Open company needed' : (r.reachable ? 'Online' : 'Offline');
+        showToast(type, r.message, title);
+
+        // Auto-select the matched company in the flush dropdown
+        if (r.matchedCompanyId && r.matchedCompanyId > 0) {
+            $('#flushCompanyId').val(r.matchedCompanyId);
+            $('#flushCompanyIdInput').val(r.matchedCompanyId);
+        }
+
+        // Show open company indicator
+        var info = $('#openCompanyInfo');
+        if (r.companies && r.companies.length > 0) {
+            info.removeClass('text-muted text-danger').addClass('text-success');
+            info.html('<i class="bi bi-building-check me-1"></i>Open in Tally: ' + r.companies.join(', ')).show();
+        } else if (r.reachable) {
+            info.removeClass('text-success text-danger').addClass('text-muted');
+            info.html('<i class="bi bi-building-x me-1"></i>No company open in Tally').show();
+        } else {
+            info.hide();
+        }
+    }).fail(function() {
+        showToast('danger', 'Request failed', 'Offline');
+    });
+}
+</script>
+}

@@ -1,0 +1,386 @@
+@using SaleOrd.Models.Domain
+@{
+    ViewData["Title"] = "Reports"; ViewData["ActivePage"] = "Reports";
+    var perms     = ViewBag.Perms as HashSet<string> ?? new HashSet<string>();
+    bool isSalesman = (bool)(ViewBag.IsSalesman ?? false);
+}
+
+<div class="page-header mb-3">
+    <h5>Reports</h5>
+</div>
+
+<!-- Global Date Filter -->
+<div class="card p-3 mb-3">
+    <div class="row g-2 align-items-end">
+        <div class="col-5">
+            <label class="form-label small mb-1">From</label>
+            <input type="date" id="rptFrom" class="form-control form-control-sm"
+                   value="@(new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1).ToString("yyyy-MM-dd"))" />
+        </div>
+        <div class="col-5">
+            <label class="form-label small mb-1">To</label>
+            <input type="date" id="rptTo" class="form-control form-control-sm"
+                   value="@DateTime.Today.ToString("yyyy-MM-dd")" />
+        </div>
+        <div class="col-2">
+            <button class="btn btn-primary btn-sm w-100" onclick="reloadActiveReport()">
+                <i class="bi bi-funnel"></i>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Accordion reports -->
+<div class="accordion" id="reportsAccordion">
+
+    <!-- ── 1. Sales Summary ──────────────────────────────────────────────── -->
+    @if (perms.Contains(AppPermissions.ReportsSummary))
+    {
+    <div class="accordion-item mb-2 border rounded">
+        <h2 class="accordion-header">
+            <button class="accordion-button collapsed fw-semibold" type="button"
+                    data-bs-toggle="collapse" data-bs-target="#sec-summary"
+                    onclick="loadSection('summary')">
+                <i class="bi bi-bar-chart-line me-2 text-primary"></i>Sales Summary
+            </button>
+        </h2>
+        <div id="sec-summary" class="accordion-collapse collapse">
+            <div class="accordion-body p-0">
+                <div id="summary-loading" class="text-center py-4 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>
+                <div id="summary-content" style="display:none">
+                    <!-- Stat cards -->
+                    <div class="row g-2 p-3" id="summary-stats"></div>
+                    <!-- Party-wise & Day-wise nested -->
+                    <div class="accordion ps-2 pe-2 pb-3" id="summary-inner">
+                        @if (perms.Contains(AppPermissions.ReportsPartyWise))
+                        {
+                        <div class="accordion-item border rounded mb-2">
+                            <h2 class="accordion-header">
+                                <button class="accordion-button collapsed py-2 small" type="button"
+                                        data-bs-toggle="collapse" data-bs-target="#sec-party">
+                                    <i class="bi bi-people me-2"></i>Party-wise Breakdown
+                                    <button class="btn btn-outline-success btn-sm border-0 ms-auto me-2 p-0 px-2" onclick="exportTable('partyTable','Party_Wise');event.stopPropagation();" title="Export">
+                                        <i class="bi bi-file-earmark-excel-fill text-success"></i>
+                                    </button>
+                                </button>
+                            </h2>
+                            <div id="sec-party" class="accordion-collapse collapse">
+                                <div class="table-responsive">
+                                    <table class="table table-sm mb-0" id="partyTable">
+                                        <thead class="table-light"><tr><th>Party</th><th class="text-center">Orders</th><th class="text-end">Amount</th><th class="text-center">Synced</th><th class="text-center">Invoiced</th></tr></thead>
+                                        <tbody id="partyTableBody"><tr><td colspan="5" class="text-center text-muted py-3">—</td></tr></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        }
+                        @if (perms.Contains(AppPermissions.ReportsDayWise))
+                        {
+                        <div class="accordion-item border rounded mb-2">
+                            <h2 class="accordion-header">
+                                <button class="accordion-button collapsed py-2 small" type="button"
+                                        data-bs-toggle="collapse" data-bs-target="#sec-day">
+                                    <i class="bi bi-calendar3 me-2"></i>Day-wise Breakdown
+                                    <button class="btn btn-outline-success btn-sm border-0 ms-auto me-2 p-0 px-2" onclick="exportTable('dayTable','Day_Wise');event.stopPropagation();" title="Export">
+                                        <i class="bi bi-file-earmark-excel-fill text-success"></i>
+                                    </button>
+                                </button>
+                            </h2>
+                            <div id="sec-day" class="accordion-collapse collapse">
+                                <div class="table-responsive">
+                                    <table class="table table-sm mb-0" id="dayTable">
+                                        <thead class="table-light"><tr><th>Date</th><th class="text-center">Orders</th><th class="text-end">Amount</th></tr></thead>
+                                        <tbody id="dayTableBody"><tr><td colspan="3" class="text-center text-muted py-3">—</td></tr></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        }
+                        <!-- Detailed orders -->
+                        <div class="accordion-item border rounded mb-2">
+                            <h2 class="accordion-header">
+                                <button class="accordion-button collapsed py-2 small" type="button"
+                                        data-bs-toggle="collapse" data-bs-target="#sec-orders-detail"
+                                        onclick="loadOrdersDetail()">
+                                    <i class="bi bi-list-ul me-2"></i>Detailed Order List
+                                    <button class="btn btn-outline-success btn-sm border-0 ms-auto me-2 p-0 px-2" onclick="exportTable('ordersDetailTable','Orders_Detail');event.stopPropagation();" title="Export">
+                                        <i class="bi bi-file-earmark-excel-fill text-success"></i>
+                                    </button>
+                                </button>
+                            </h2>
+                            <div id="sec-orders-detail" class="accordion-collapse collapse">
+                                <div id="orders-detail-loading" class="text-center py-3 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>
+                                <div class="table-responsive" id="orders-detail-wrap" style="display:none">
+                                    <table class="table table-sm mb-0" id="ordersDetailTable">
+                                        <thead class="table-light"><tr><th>SO No</th><th>Date</th><th>Party</th><th class="text-end">Amount</th><th>Status</th><th>By</th><th>Invoice</th></tr></thead>
+                                        <tbody id="ordersDetailBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    }
+
+    <!-- ── 2. User-wise Sales ────────────────────────────────────────────── -->
+    @if (perms.Contains(AppPermissions.ReportsUserWise) && !isSalesman)
+    {
+    <div class="accordion-item mb-2 border rounded">
+        <h2 class="accordion-header">
+            <button class="accordion-button collapsed fw-semibold" type="button"
+                    data-bs-toggle="collapse" data-bs-target="#sec-userwise"
+                    onclick="loadSection('userwise')">
+                <i class="bi bi-person-lines-fill me-2 text-success"></i>User-wise Sales
+            </button>
+        </h2>
+        <div id="sec-userwise" class="accordion-collapse collapse">
+            <div class="accordion-body p-0">
+                <div id="userwise-loading" class="text-center py-4 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>
+                <div class="table-responsive" id="userwise-content" style="display:none">
+                    <table class="table table-sm mb-0" id="userwiseTable">
+                        <thead class="table-light"><tr><th>User</th><th class="text-center">Orders</th><th class="text-end">Amount</th><th class="text-center">Pending</th><th class="text-center">Synced</th><th class="text-center">Invoiced</th></tr></thead>
+                        <tbody id="userwiseBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    }
+
+    <!-- ── 3. Pending Orders ─────────────────────────────────────────────── -->
+    @if (perms.Contains(AppPermissions.ReportsPending))
+    {
+    <div class="accordion-item mb-2 border rounded">
+        <h2 class="accordion-header">
+            <button class="accordion-button collapsed fw-semibold" type="button"
+                    data-bs-toggle="collapse" data-bs-target="#sec-pending"
+                    onclick="loadSection('pending')">
+                <i class="bi bi-clock-history me-2 text-warning"></i>Pending Orders
+                <span class="badge bg-warning text-dark ms-2" id="pendingBadge" style="display:none"></span>
+            </button>
+        </h2>
+        <div id="sec-pending" class="accordion-collapse collapse">
+            <div class="accordion-body p-0">
+                <div id="pending-loading" class="text-center py-4 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>
+                <div class="table-responsive" id="pending-content" style="display:none">
+                    <table class="table table-sm mb-0" id="pendingTable">
+                        <thead class="table-light"><tr><th>SO No</th><th>Date</th><th>Party</th><th class="text-end">Amount</th><th>Status</th><th>By</th><th>Error</th></tr></thead>
+                        <tbody id="pendingBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    }
+
+    <!-- ── 4. User Performance ───────────────────────────────────────────── -->
+    @if (perms.Contains(AppPermissions.ReportsUserPerf) && !isSalesman)
+    {
+    <div class="accordion-item mb-2 border rounded">
+        <h2 class="accordion-header">
+            <button class="accordion-button collapsed fw-semibold" type="button"
+                    data-bs-toggle="collapse" data-bs-target="#sec-userperf"
+                    onclick="loadSection('userperf')">
+                <i class="bi bi-graph-up-arrow me-2 text-info"></i>User Performance
+            </button>
+        </h2>
+        <div id="sec-userperf" class="accordion-collapse collapse">
+            <div class="accordion-body p-0">
+                <div id="userperf-loading" class="text-center py-4 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>
+                <div class="table-responsive" id="userperf-content" style="display:none">
+                    <table class="table table-sm mb-0" id="userperfTable">
+                        <thead class="table-light"><tr><th>User</th><th class="text-center">Orders</th><th class="text-end">Total Value</th><th class="text-end">Avg Order</th><th class="text-center">Pending</th><th class="text-center">Invoiced</th></tr></thead>
+                        <tbody id="userperfBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    }
+
+</div>
+
+@section Scripts {
+<script>
+var loadedSections = {};
+var ordersDetailLoaded = false;
+
+function getDateParams() {
+    return '?from=' + $('#rptFrom').val() + '&to=' + $('#rptTo').val();
+}
+
+function reloadActiveReport() {
+    loadedSections = {};
+    ordersDetailLoaded = false;
+    // reload whichever section is open
+    $('.accordion-collapse.show').each(function() {
+        var id = $(this).attr('id');
+        var key = id.replace('sec-', '');
+        if (key === 'orders-detail') {
+            loadOrdersDetail(true);
+        } else {
+            loadSection(key, true);
+        }
+    });
+}
+
+function loadSection(key, force) {
+    if (loadedSections[key] && !force) return;
+    loadedSections[key] = true;
+
+    var urls = {
+        summary:  '/Reports/SalesSummary',
+        userwise: '/Reports/UserWise',
+        pending:  '/Reports/PendingOrders',
+        userperf: '/Reports/UserPerformance',
+    };
+
+    var url = urls[key];
+    if (!url) return;
+
+    $('#' + key + '-loading').show();
+    $('#' + key + '-content').hide();
+
+    $.get(url + getDateParams(), function(data) {
+        if (key === 'summary') renderSummary(data);
+        else if (key === 'userwise') renderUserWise(data);
+        else if (key === 'pending') renderPending(data);
+        else if (key === 'userperf') renderUserPerf(data);
+
+        $('#' + key + '-loading').hide();
+        $('#' + key + '-content').show();
+    }).fail(function() {
+        $('#' + key + '-loading').html('<span class="text-danger small">Failed to load.</span>');
+    });
+}
+
+function loadOrdersDetail(force) {
+    if (ordersDetailLoaded && !force) return;
+    ordersDetailLoaded = true;
+
+    $('#orders-detail-loading').show();
+    $('#orders-detail-wrap').hide();
+
+    $.get('/Reports/OrdersList' + getDateParams(), function(data) {
+        var html = '';
+        if (!data.length) {
+            html = '<tr><td colspan="7" class="text-center text-muted py-3">No orders found.</td></tr>';
+        } else {
+            data.forEach(function(o) {
+                var statusBadge = o.status === 'Pending' ? 'badge-pending' : o.status === 'Synced' ? 'badge-synced' : o.status === 'Error' ? 'badge-error' : 'badge-draft';
+                html += '<tr>' +
+                    '<td class="small"><a href="/SaleOrder/Details/' + o.saleOrderId + '">' + esc(o.orderNo) + '</a></td>' +
+                    '<td class="small">' + fmtDate(o.orderDate) + '</td>' +
+                    '<td class="small">' + esc(o.ledgerName) + '</td>' +
+                    '<td class="text-end small fw-semibold">₹' + fmtNum(o.total) + '</td>' +
+                    '<td><span class="badge ' + statusBadge + '">' + o.status + '</span></td>' +
+                    '<td class="small">' + esc(o.createdByName) + '</td>' +
+                    '<td class="small">' + (o.isInvoiced ? '<span class="text-success fw-semibold">' + esc(o.tallyInvoiceNo || 'Yes') + '</span>' : '—') + '</td>' +
+                    '</tr>';
+            });
+        }
+        $('#ordersDetailBody').html(html);
+        $('#orders-detail-loading').hide();
+        $('#orders-detail-wrap').show();
+    }).fail(function() {
+        $('#orders-detail-loading').html('<span class="text-danger small">Failed to load.</span>');
+    });
+}
+
+function renderSummary(d) {
+    var stats = [
+        { label: 'Total Orders', val: d.totalOrders, cls: 'text-primary' },
+        { label: 'Total Value', val: '₹' + fmtNum(d.totalValue), cls: 'text-dark' },
+        { label: 'Synced', val: d.syncedCount, cls: 'text-success' },
+        { label: 'Pending', val: d.pendingCount, cls: 'text-warning' },
+        { label: 'Invoiced', val: d.invoicedCount, cls: 'text-info' },
+    ];
+    var html = '';
+    stats.forEach(function(s) {
+        html += '<div class="col-6 col-md-4 col-lg-2"><div class="card stat-card p-3"><div class="small text-muted">' + s.label + '</div><div class="fs-5 fw-bold ' + s.cls + '">' + s.val + '</div></div></div>';
+    });
+    $('#summary-stats').html(html);
+
+    // party table
+    var ph = d.partyWise.length ? '' : '<tr><td colspan="5" class="text-center text-muted py-3">No data.</td></tr>';
+    d.partyWise.forEach(function(r) {
+        ph += '<tr><td class="small">' + esc(r.party) + '</td><td class="text-center small">' + r.count + '</td><td class="text-end small fw-semibold">₹' + fmtNum(r.total) + '</td><td class="text-center small">' + r.synced + '</td><td class="text-center small">' + r.invoiced + '</td></tr>';
+    });
+    $('#partyTableBody').html(ph);
+
+    // day table
+    var dh = d.dayWise.length ? '' : '<tr><td colspan="3" class="text-center text-muted py-3">No data.</td></tr>';
+    d.dayWise.forEach(function(r) {
+        dh += '<tr><td class="small">' + fmtDate(r.date) + '</td><td class="text-center small">' + r.count + '</td><td class="text-end small fw-semibold">₹' + fmtNum(r.total) + '</td></tr>';
+    });
+    $('#dayTableBody').html(dh);
+}
+
+function renderUserWise(data) {
+    var html = '';
+    data.forEach(function(r) {
+        html += '<tr><td class="small fw-semibold">' + esc(r.userName) + '</td><td class="text-center small">' + r.count + '</td><td class="text-end small fw-semibold">₹' + fmtNum(r.total) + '</td><td class="text-center small">' + r.pending + '</td><td class="text-center small">' + r.synced + '</td><td class="text-center small">' + r.invoiced + '</td></tr>';
+    });
+    if (!data.length) html = '<tr><td colspan="6" class="text-center text-muted py-3">No data.</td></tr>';
+    $('#userwiseBody').html(html);
+}
+
+function renderPending(data) {
+    $('#pendingBadge').text(data.length).show();
+    var html = '';
+    data.forEach(function(r) {
+        var statusBadge = r.status === 'Pending' ? 'badge-pending' : 'badge-error';
+        html += '<tr><td class="small"><a href="/SaleOrder/Details/' + r.saleOrderId + '">' + esc(r.orderNo) + '</a></td>' +
+            '<td class="small">' + fmtDate(r.orderDate) + '</td>' +
+            '<td class="small">' + esc(r.ledgerName) + '</td>' +
+            '<td class="text-end small fw-semibold">₹' + fmtNum(r.total) + '</td>' +
+            '<td><span class="badge ' + statusBadge + '">' + r.status + '</span></td>' +
+            '<td class="small">' + esc(r.createdByName) + '</td>' +
+            '<td class="small text-danger" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(r.syncError || '') + '">' + esc(r.syncError || '—') + '</td></tr>';
+    });
+    if (!data.length) html = '<tr><td colspan="7" class="text-center text-muted py-3">No pending orders.</td></tr>';
+    $('#pendingBody').html(html);
+}
+
+function renderUserPerf(data) {
+    var html = '';
+    data.forEach(function(r) {
+        html += '<tr><td class="small fw-semibold">' + esc(r.userName) + '</td><td class="text-center small">' + r.count + '</td><td class="text-end small fw-semibold">₹' + fmtNum(r.total) + '</td><td class="text-end small">₹' + fmtNum(r.avgOrder) + '</td><td class="text-center small">' + r.pending + '</td><td class="text-center small">' + r.invoiced + '</td></tr>';
+    });
+    if (!data.length) html = '<tr><td colspan="6" class="text-center text-muted py-3">No data.</td></tr>';
+    $('#userperfBody').html(html);
+}
+
+function exportTable(tableId, filename) {
+    var table = document.getElementById(tableId);
+    if (!table) return;
+    var csv = [];
+    table.querySelectorAll('tr').forEach(function(row) {
+        var r = [];
+        row.querySelectorAll('td, th').forEach(function(cell) {
+            r.push('"' + cell.innerText.trim().replace(/₹/g,'').replace(/"/g,'""') + '"');
+        });
+        if (r.length) csv.push(r.join(','));
+    });
+    var link = document.createElement('a');
+    link.href = 'data:text/csv;charset=utf-8,﻿' + encodeURI(csv.join('\n'));
+    link.download = filename + '.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+function fmtNum(n) {
+    return (n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function fmtDate(s) {
+    if (!s) return '—';
+    var d = new Date(s);
+    return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' });
+}
+function esc(s) { return $('<div>').text(s || '').html(); }
+</script>
+}

@@ -1,0 +1,289 @@
+@{ ViewData["Title"] = "Dashboard"; ViewData["ActivePage"] = "Dashboard"; }
+@{
+    var stats = ViewBag.Stats;
+    var recentOrders = ViewBag.RecentOrders as IEnumerable<dynamic> ?? Enumerable.Empty<dynamic>();
+    var syncInfo = ViewBag.SyncInfo;
+}
+
+<div class="page-header">
+    <div>
+        <h5>Dashboard</h5>
+        <div class="page-title-sub">Welcome back, @ViewBag.UserName</div>
+    </div>
+    <div class="d-flex gap-2">
+        <button class="btn btn-outline-secondary btn-sm" id="syncBtn" onclick="triggerSync()" title="Sync data from Tally">
+            <i class="bi bi-arrow-repeat" id="syncIcon"></i>
+            <span class="d-none d-md-inline ms-1">Sync</span>
+        </button>
+        <a href="/SaleOrder/Create" class="btn btn-primary btn-sm">
+            <i class="bi bi-plus-lg me-1"></i>New Order
+        </a>
+    </div>
+</div>
+
+<div id="syncMsg" class="alert py-2 small mb-3" style="display:none"></div>
+
+<!-- ── Stat cards ── -->
+@if (stats != null)
+{
+    <div class="row g-3 mb-3">
+        <div class="col-6 col-md-3">
+            <div class="card stat-card stat-blue p-3">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <div class="stat-val text-primary">@stats.TodayCount</div>
+                        <div class="stat-label">Today's Orders</div>
+                    </div>
+                    <div class="stat-icon icon-blue"><i class="bi bi-calendar-check"></i></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="card stat-card stat-orange p-3">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <div class="stat-val" style="color:var(--warning)">@stats.Pending</div>
+                        <div class="stat-label">Pending Sync</div>
+                    </div>
+                    <div class="stat-icon icon-orange"><i class="bi bi-clock-history"></i></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="card stat-card stat-green p-3">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <div class="stat-val" style="color:var(--success)">@stats.Synced</div>
+                        <div class="stat-label">Synced to Tally</div>
+                    </div>
+                    <div class="stat-icon icon-green"><i class="bi bi-check-circle"></i></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="card stat-card stat-red p-3">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <div class="stat-val" style="color:var(--danger)">@stats.Error</div>
+                        <div class="stat-label">Sync Errors</div>
+                    </div>
+                    <div class="stat-icon icon-red"><i class="bi bi-exclamation-triangle"></i></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-6 col-md-4">
+            <div class="card stat-card stat-purple p-3">
+                <div class="stat-label">This Month</div>
+                <div class="stat-val" style="color:#7209b7">₹@(((decimal)stats.MonthValue).ToString("N0"))</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-4">
+            <div class="card stat-card stat-teal p-3">
+                <div class="stat-label">Total Orders</div>
+                <div class="stat-val" style="color:#00838f">@stats.Total</div>
+            </div>
+        </div>
+        <div class="col-12 col-md-4">
+            <div class="card p-3 h-100">
+                <div class="stat-label mb-2">Total Value (All Time)</div>
+                <div class="stat-val text-primary">₹@(((decimal)stats.TotalValue).ToString("N0"))</div>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ── Main grid (desktop 2-col) ── -->
+<div class="row g-3">
+    <!-- Recent orders (left/full) -->
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Recent Orders</span>
+                <a href="/SaleOrder" class="btn btn-sm btn-outline-primary" style="font-size:11px">View all</a>
+            </div>
+            <div class="p-2">
+                @foreach (var o in recentOrders)
+                {
+                    string sc = o.Status.ToString() switch { "Pending" => "badge-pending", "Synced" => "badge-synced", "Error" => "badge-error", _ => "badge-draft" };
+                    <a href="/SaleOrder/Details/@o.SaleOrderId" class="text-decoration-none">
+                        <div class="order-card card px-3 py-2">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div style="min-width:0">
+                                    <div class="fw-semibold text-truncate" style="font-size:13px">@o.LedgerName</div>
+                                    <div class="text-muted" style="font-size:11px">@o.OrderNo · @(((DateTime)o.OrderDate).ToString("dd MMM"))</div>
+                                </div>
+                                <div class="text-end ms-2 flex-shrink-0">
+                                    <div class="fw-bold" style="font-size:13px">₹@(((decimal)o.TotalAmount).ToString("N0"))</div>
+                                    <span class="badge @sc" style="font-size:.65rem">@o.Status</span>
+                                </div>
+                            </div>
+                        </div>
+                    </a>
+                }
+                @if (!recentOrders.Any())
+                {
+                    <div class="text-center text-muted py-4">
+                        <i class="bi bi-inbox" style="font-size:32px;opacity:.4"></i>
+                        <p class="mt-2 small">No orders yet. <a href="/SaleOrder/Create">Create first order</a></p>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- Sync status (right) -->
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Tally Sync Status</span>
+                <span id="syncStatusBadge" class="sync-badge unknown">
+                    <i class="bi bi-circle-fill" style="font-size:7px"></i>
+                    <span id="syncStatusLabel">Unknown</span>
+                </span>
+            </div>
+            <div class="p-3">
+                <div class="sync-stat-row">
+                    <div class="d-flex align-items-center gap-2">
+                        <i class="bi bi-people text-primary" style="font-size:16px"></i>
+                        <span class="fw-semibold" style="font-size:13px">Parties</span>
+                    </div>
+                    <div class="text-end">
+                        <div class="sync-count" id="sc-ledgers">@(ViewBag.LedgerCount ?? 0)</div>
+                        <div class="text-muted" style="font-size:10px">synced</div>
+                    </div>
+                </div>
+                <div class="sync-stat-row">
+                    <div class="d-flex align-items-center gap-2">
+                        <i class="bi bi-box-seam text-success" style="font-size:16px"></i>
+                        <span class="fw-semibold" style="font-size:13px">Stock Items</span>
+                    </div>
+                    <div class="text-end">
+                        <div class="sync-count" id="sc-items">@(ViewBag.ItemCount ?? 0)</div>
+                        <div class="text-muted" style="font-size:10px">synced</div>
+                    </div>
+                </div>
+                <div class="sync-stat-row">
+                    <div class="d-flex align-items-center gap-2">
+                        <i class="bi bi-buildings text-warning" style="font-size:16px"></i>
+                        <span class="fw-semibold" style="font-size:13px">Godowns</span>
+                    </div>
+                    <div class="text-end">
+                        <div class="sync-count" id="sc-godowns">@(ViewBag.GodownCount ?? 0)</div>
+                        <div class="text-muted" style="font-size:10px">synced</div>
+                    </div>
+                </div>
+                <div class="sync-stat-row">
+                    <div class="d-flex align-items-center gap-2">
+                        <i class="bi bi-file-earmark-check text-info" style="font-size:16px"></i>
+                        <span class="fw-semibold" style="font-size:13px">Orders Pending</span>
+                    </div>
+                    <div class="text-end">
+                        <div class="sync-count" style="color:var(--warning)" id="sc-pending">@(stats?.Pending ?? 0)</div>
+                        <div class="text-muted" style="font-size:10px">to push</div>
+                    </div>
+                </div>
+
+                <div class="sync-stat-row">
+                    <div class="d-flex align-items-center gap-2">
+                        <i class="bi bi-building text-secondary" style="font-size:16px"></i>
+                        <span class="fw-semibold" style="font-size:13px">Open in Tally</span>
+                    </div>
+                    <div class="text-end">
+                        <div class="sync-count" id="sc-open-company" style="font-size:12px;color:var(--secondary)">Checking...</div>
+                    </div>
+                </div>
+
+                <div class="mt-3 pt-2 d-flex align-items-center justify-content-between">
+                    <small class="text-muted">
+                        <i class="bi bi-clock me-1"></i>Last sync:
+                        <span id="lastSyncTime">@(ViewBag.LastSync is DateTime d ? d.ToString("dd MMM, h:mm tt") : "Never")</span>
+                    </small>
+                    <a href="/Admin/SyncLogs" class="small text-primary">View logs</a>
+                </div>
+            </div>
+        </div>
+
+        @{ var errorCount = stats == null ? 0 : (int)stats.Error; }
+        @if (errorCount > 0)
+        {
+            <div class="card border-danger" style="border-color:var(--danger)!important">
+                <div class="card-header text-danger d-flex align-items-center gap-2">
+                    <i class="bi bi-exclamation-triangle-fill"></i>
+                    @errorCount order(s) failed to sync
+                </div>
+                <div class="p-3">
+                    <p class="small text-muted mb-2">These orders could not be pushed to Tally.</p>
+                    <a href="/SaleOrder?status=Error" class="btn btn-sm btn-outline-danger w-100">View &amp; Resubmit</a>
+                </div>
+            </div>
+        }
+    </div>
+</div>
+
+@section Scripts {
+<script>
+function triggerSync() {
+    var btn = $('#syncBtn'), icon = $('#syncIcon'), msg = $('#syncMsg');
+    btn.prop('disabled', true); icon.addClass('spin');
+
+    $.ajax({
+        url: '/api/sync/trigger-masters', type: 'POST',
+        headers: { 'RequestVerificationToken': $('[name=__RequestVerificationToken]').val() },
+        success: function(r) {
+            var status = (r.status || '').toLowerCase();
+            var toastType = r.success ? 'success' : (status === 'warning' ? 'warning' : 'danger');
+            var toastTitle = r.success ? 'Sync complete' : (status === 'warning' ? 'Open company needed' : 'Sync issue');
+            showToast(toastType, r.message, toastTitle);
+            if (r.success) {
+                $('#lastSyncTime').text(r.syncedAt);
+                if (r.ledgers !== undefined) $('#sc-ledgers').text(r.ledgers);
+                if (r.items   !== undefined) $('#sc-items').text(r.items);
+                if (r.godowns !== undefined) $('#sc-godowns').text(r.godowns);
+                updateSyncBadge(r.status || 'online', 'Online');
+            } else {
+                if ((r.status || '').toLowerCase() === 'warning') {
+                    updateSyncBadge('warning', 'Company not open');
+                } else {
+                    updateSyncBadge('offline', 'Offline');
+                }
+            }
+        },
+        error: function() {
+            showToast('danger', 'Could not connect to Tally', 'Sync failed');
+            updateSyncBadge('offline', 'Offline');
+        },
+        complete: function() { btn.prop('disabled', false); icon.removeClass('spin'); }
+    });
+}
+
+function updateSyncBadge(status, label) {
+    $('#syncStatusBadge')
+        .removeClass('online offline unknown warning')
+        .addClass(status || 'unknown');
+    $('#syncStatusLabel').text(label || 'Unknown');
+}
+
+// Auto-check Tally status on page load
+$(function() {
+    $.get('/api/sync/tally-status', function(r) {
+        var el = $('#sc-open-company');
+        if (r.reachable && r.openCompany) {
+            el.text(r.openCompany).css('color', 'var(--success)');
+            updateSyncBadge('online', 'Online');
+        } else if (r.reachable) {
+            el.text('None open').css('color', 'var(--warning)');
+            updateSyncBadge('warning', 'No Company');
+        } else {
+            el.text('Offline').css('color', 'var(--danger)');
+            updateSyncBadge('offline', 'Offline');
+        }
+    }).fail(function() {
+        $('#sc-open-company').text('—').css('color', '');
+    });
+});
+</script>
+@Html.AntiForgeryToken()
+}
