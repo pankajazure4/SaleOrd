@@ -1,8 +1,9 @@
 @using SaleOrd.Models.Domain
 @{
     ViewData["Title"] = "Reports"; ViewData["ActivePage"] = "Reports";
-    var perms     = ViewBag.Perms as HashSet<string> ?? new HashSet<string>();
+    var perms      = ViewBag.Perms as HashSet<string> ?? new HashSet<string>();
     bool isSalesman = (bool)(ViewBag.IsSalesman ?? false);
+    var initSection = Context.Request.Query["section"].ToString(); // e.g. "summary", "partywise"
 }
 
 <div class="page-header mb-3">
@@ -232,10 +233,10 @@ function loadSection(key, force) {
     loadedSections[key] = true;
 
     var urls = {
-        summary:  '/Reports/SalesSummary',
-        userwise: '/Reports/UserWise',
-        pending:  '/Reports/PendingOrders',
-        userperf: '/Reports/UserPerformance',
+        summary:  '/Reports/SummaryData',
+        userwise: '/Reports/UserWiseData',
+        pending:  '/Reports/PendingData',
+        userperf: '/Reports/UserPerfData',
     };
 
     var url = urls[key];
@@ -382,5 +383,32 @@ function fmtDate(s) {
     return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' });
 }
 function esc(s) { return $('<div>').text(s || '').html(); }
+
+// Auto-open section when navigated from sidebar link
+$(function() {
+    @if (!string.IsNullOrEmpty(initSection))
+    {
+        <text>
+        var sec = '@initSection';
+        var sectionMap = {
+            'summary':  'sec-summary',
+            'partywise':'sec-party',
+            'daywise':  'sec-day',
+            'userwise': 'sec-userwise',
+            'pending':  'sec-pending',
+            'userperf': 'sec-userperf'
+        };
+        var collapseId = sectionMap[sec];
+        if (collapseId) {
+            var el = document.getElementById(collapseId);
+            if (el) {
+                var bsCollapse = new bootstrap.Collapse(el, { toggle: false });
+                bsCollapse.show();
+                loadSection(sec);
+            }
+        }
+        </text>
+    }
+});
 </script>
 }

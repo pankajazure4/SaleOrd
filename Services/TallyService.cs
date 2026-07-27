@@ -98,7 +98,7 @@ public class TallyService
                               ?? el.Element("LEDGERCONTACT")?.Value?.Trim(),
                 Email          = el.Element("EMAIL")?.Value?.Trim(),
                 LedgerFax      = el.Element("LEDGERFAX")?.Value?.Trim(),
-                GSTNo          = el.Element("PARTYGSTINNO")?.Value?.Trim(),
+                GSTNo          = el.Element("PARTYGSTIN")?.Value?.Trim(),
                 TaxType        = el.Element("TAXTYPE")?.Value?.Trim(),
                 IncomeTaxNo    = el.Element("INCOMETAXNUMBER")?.Value?.Trim(),
                 VATTINNo       = el.Element("VATTINNUMBER")?.Value?.Trim(),
@@ -226,77 +226,308 @@ public class TallyService
             .ToList();
     }
 
-    public async Task<(bool Success, string Message)> PushSaleOrderAsync(
-        string tallyUrl, SaleOrder order,
-        string igstLedger = "IGST", string cgstLedger = "CGST", string sgstLedger = "SGST")
+    // Customer+Item last sale rate, pulled from Tally's actual Sales vouchers
+    // (not Sales Orders — those aren't real sales yet). Same IsSales filter
+    // GetRecentSalesInvoicesAsync uses. Only the latest rate per (party, item)
+    // pair is kept, so storage stays proportional to distinct customer-item
+    // combinations rather than total voucher count.
+    //
+    // Bounded to the last 180 days (SVFROMDATE/SVTODATE) — a rate from years
+    // ago isn't a useful "last sale rate" for pricing today anyway. No
+    // EXPLODEVCHTYPE here: it forces Tally to resolve the full voucher-type
+    // class hierarchy for every voucher returned, which is unnecessary for a
+    // generic field like AllInventoryEntries that exists on every voucher
+    // type regardless of class — and an unbounded scan with that flag set is
+    // exactly the kind of query that was found to crash Tally's native HTTP
+    // engine on a client install with a long sales history (see
+    // GetRecentSalesInvoicesAsync for the fuller writeup of that incident).
+    public async Task<List<SaleRateRecord>> GetLastSaleRatesAsync(string tallyUrl, Company company)
     {
-        var dateStr    = order.OrderDate.ToString("yyyyMMdd");
-        var grandTotal = order.GrandTotal > 0 ? order.GrandTotal : order.TotalAmount;
-        var itemsXml   = new StringBuilder();
-        var taxXml     = new StringBuilder();
+        var fromDate = DateTime.Today.AddDays(-180);
+        var xml = $@"<ENVELOPE>
+  <HEADER><VERSION>1</VERSION><TALLYREQUEST>EXPORT</TALLYREQUEST><TYPE>COLLECTION</TYPE><ID>List of Sale Rates</ID></HEADER>
+  <BODY><DESC>
+    <STATICVARIABLES>
+      <SVCURRENTCOMPANY>{Escape(company.TallyCompanyName)}</SVCURRENTCOMPANY>
+      <SVFROMDATE TYPE=""Date"">{fromDate:yyyyMMdd}</SVFROMDATE>
+      <SVTODATE TYPE=""Date"">{DateTime.Today:yyyyMMdd}</SVTODATE>
+      <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+    </STATICVARIABLES>
+    <TDL><TDLMESSAGE>
+      <COLLECTION NAME=""List of Sale Rates"" ISINITIALIZE=""Yes"">
+        <TYPE>Voucher</TYPE>
+        <FILTER>IsSales</FILTER>
+        <FETCH>Date,PartyLedgerName,AllInventoryEntries.List:StockItemName,AllInventoryEntries.List:Rate</FETCH>
+      </COLLECTION>
+      <SYSTEM TYPE=""Formulae"" NAME=""IsSales"">$$IsEqual:$VoucherTypeName:&quot;Sales&quot;</SYSTEM>
+    </TDLMESSAGE></TDL>
+  </DESC></BODY>
+</ENVELOPE>";
 
-        foreach (var item in order.Items)
+        var doc = await PostXmlAsync(tallyUrl, xml);
+        if (doc == null) return new();
+
+        var latest = new Dictionary<(string Party, string Item), SaleRateRecord>();
+
+        foreach (var vch in doc.Descendants("VOUCHER"))
         {
-            itemsXml.Append($@"
-        <ALLINVENTORYENTRIES.LIST>
-          <STOCKITEMNAME>{Escape(item.ItemName)}</STOCKITEMNAME>
-          <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
-          <RATE>{item.Rate:F2}/{item.UOM}</RATE>
-          <AMOUNT>-{item.Amount:F2}</AMOUNT>
-          <ACTUALQTY>{item.Qty:F3} {item.UOM}</ACTUALQTY>
-          <BILLEDQTY>{item.Qty:F3} {item.UOM}</BILLEDQTY>
-          {(item.GodownName != null ? $"<BATCHALLOCATIONS.LIST><GODOWNNAME>{Escape(item.GodownName)}</GODOWNNAME><ACTUALQTY>{item.Qty:F3} {item.UOM}</ACTUALQTY><AMOUNT>-{item.Amount:F2}</AMOUNT></BATCHALLOCATIONS.LIST>" : "")}
-        </ALLINVENTORYENTRIES.LIST>");
+            var partyName = vch.Element("PARTYLEDGERNAME")?.Value?.Trim();
+            var dateVal = vch.Element("DATE")?.Value?.Trim();
+            if (string.IsNullOrWhiteSpace(partyName) || dateVal?.Length != 8) continue;
+            if (!DateTime.TryParseExact(dateVal, "yyyyMMdd", null,
+                    System.Globalization.DateTimeStyles.None, out var saleDate))
+                continue;
+
+            foreach (var entry in vch.Descendants("ALLINVENTORYENTRIES.LIST"))
+            {
+                var itemName = entry.Element("STOCKITEMNAME")?.Value?.Trim();
+                var rate = ParseRate(entry.Element("RATE")?.Value);
+                if (string.IsNullOrWhiteSpace(itemName) || rate <= 0) continue;
+
+                var key = (partyName, itemName);
+                if (!latest.TryGetValue(key, out var existing) || saleDate > existing.SaleDate)
+                {
+                    latest[key] = new SaleRateRecord
+                    {
+                        PartyName = partyName,
+                        ItemName = itemName,
+                        Rate = rate,
+                        SaleDate = saleDate
+                    };
+                }
+            }
         }
 
+        _logger.LogInformation("Last sale rates from Tally for {Co}: {N} party-item pairs",
+            company.TallyCompanyName, latest.Count);
+        return latest.Values.ToList();
+    }
+
+    public async Task<(bool Success, string Message)> PushSaleOrderAsync(
+        string tallyUrl, SaleOrder order, string companyName,
+        string salesLedger  = "Sales",
+        string igstLedger   = "IGST",
+        string cgstLedger   = "CGST",
+        string sgstLedger   = "SGST",
+        string roundOffLedger = "Round Off",
+        bool   isAlter      = false,
+        string voucherType  = "Sales Order",
+        string batchName    = "Primary Batch")
+    {
+        var action     = isAlter ? "Alter" : "Create";
+        var dateStr    = order.OrderDate.ToString("yyyyMMdd");
+        var grandTotal = order.GrandTotal > 0 ? order.GrandTotal : order.TotalAmount;
+        var narration  = string.IsNullOrWhiteSpace(order.Narration)
+            ? $"Ref: {order.OrderNo}"
+            : $"Ref: {order.OrderNo} | {order.Narration}";
+        var remoteId   = $"saleord{order.SaleOrderId:D7}";
+        var dueDate    = order.DeliveryDate ?? order.OrderDate;
+
+        // ── Inventory entries ────────────────────────────────────────────────
+        var itemsXml = new StringBuilder();
+        foreach (var item in order.Items)
+        {
+            var rateStr = $"{item.Rate:F2}/{item.UOM}";
+            var qtyStr  = $" {item.Qty:F3} {item.UOM}";
+
+            var batchXml = string.Empty;
+            if (!string.IsNullOrWhiteSpace(item.GodownName))
+            {
+                var jd = TallyJd(dueDate);
+                var p  = dueDate.ToString("d-MMM-yy");
+                batchXml = $@"
+              <BATCHALLOCATIONS.LIST>
+                <GODOWNNAME>{Escape(item.GodownName)}</GODOWNNAME>
+                <BATCHNAME>{Escape(batchName)}</BATCHNAME>
+                <ORDERNO>{Escape(order.OrderNo)}</ORDERNO>
+                <AMOUNT>{item.Amount:F2}</AMOUNT>
+                <ACTUALQTY>{qtyStr}</ACTUALQTY>
+                <BILLEDQTY>{qtyStr}</BILLEDQTY>
+                <ORDERDUEDATE JD=""{jd}"" P=""{p}"">{p}</ORDERDUEDATE>
+                <ADDITIONALDETAILS.LIST></ADDITIONALDETAILS.LIST>
+                <VOUCHERCOMPONENTLIST.LIST></VOUCHERCOMPONENTLIST.LIST>
+              </BATCHALLOCATIONS.LIST>";
+            }
+
+            itemsXml.Append($@"
+            <ALLINVENTORYENTRIES.LIST>
+              <STOCKITEMNAME>{Escape(item.ItemName)}</STOCKITEMNAME>
+              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+              <RATE>{rateStr}</RATE>
+              <DISCOUNT>{item.Discount:F2}</DISCOUNT>
+              <AMOUNT>{item.Amount:F2}</AMOUNT>
+              <ACTUALQTY>{qtyStr}</ACTUALQTY>
+              <BILLEDQTY>{qtyStr}</BILLEDQTY>
+              {batchXml}
+              <ACCOUNTINGALLOCATIONS.LIST>
+                <LEDGERNAME>{Escape(salesLedger)}</LEDGERNAME>
+                <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+                <LEDGERFROMITEM>No</LEDGERFROMITEM>
+                <REMOVEZEROENTRIES>No</REMOVEZEROENTRIES>
+                <ISPARTYLEDGER>No</ISPARTYLEDGER>
+                <GSTOVERRIDDEN>No</GSTOVERRIDDEN>
+                <AMOUNT>{item.Amount:F2}</AMOUNT>
+                <SERVICETATXDETAILS.LIST></SERVICETATXDETAILS.LIST>
+                <CATEGORYALLOCATIONS.LIST></CATEGORYALLOCATIONS.LIST>
+                <BANKALLOCATION.LIST></BANKALLOCATION.LIST>
+                <BILLALLOCATIONS.LIST></BILLALLOCATIONS.LIST>
+                <INTERESTCOLLECTION.LIST></INTERESTCOLLECTION.LIST>
+                <OLDAUDITENTRIES.LIST></OLDAUDITENTRIES.LIST>
+                <ACCOUNTAUDITENTRIES.LIST></ACCOUNTAUDITENTRIES.LIST>
+                <AUDITENTRIES.LIST></AUDITENTRIES.LIST>
+                <INPUTCRALOCS.LIST></INPUTCRALOCS.LIST>
+                <DUTYHEADDETAILS.LIST></DUTYHEADDETAILS.LIST>
+                <RATEDETAILS.LIST></RATEDETAILS.LIST>
+                <REFVOUCHERDETAILS.LIST></REFVOUCHERDETAILS.LIST>
+                <INVOICEWISEDETAILS.LIST></INVOICEWISEDETAILS.LIST>
+                <TAXTYPEALLOCATIONS.LIST></TAXTYPEALLOCATIONS.LIST>
+              </ACCOUNTINGALLOCATIONS.LIST>
+              <DUTYHEADDETAILS.LIST></DUTYHEADDETAILS.LIST>
+              <RATEDETAILS.LIST></RATEDETAILS.LIST>
+              <SUPPLEMENTARYDUTYHEADDETAILS.LIST></SUPPLEMENTARYDUTYHEADDETAILS.LIST>
+              <TAXOBJECTALLOCATIONS.LIST></TAXOBJECTALLOCATIONS.LIST>
+              <REFVOUCHERDETAILS.LIST></REFVOUCHERDETAILS.LIST>
+              <EXCISEALLOCATIONS.LIST></EXCISEALLOCATIONS.LIST>
+              <EXPENSEALLOCATIONS.LIST></EXPENSEALLOCATIONS.LIST>
+            </ALLINVENTORYENTRIES.LIST>");
+        }
+
+        // ── Ledger entries ────────────────────────────────────────────────────
+        var ledgersXml = new StringBuilder();
+
+        // Party ledger — positive (owed by customer), so amount is negative in Tally DR/CR convention
+        ledgersXml.Append($@"
+            <LEDGERENTRIES.LIST>
+              <OLDAUDITENTRYIDS.LIST TYPE=""Number""><OLDAUDITENTRYIDS>-1</OLDAUDITENTRYIDS></OLDAUDITENTRYIDS.LIST>
+              <LEDGERNAME>{Escape(order.LedgerName)}</LEDGERNAME>
+              <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+              <LEDGERFROMITEM>No</LEDGERFROMITEM>
+              <REMOVEZEROENTRIES>No</REMOVEZEROENTRIES>
+              <ISPARTYLEDGER>Yes</ISPARTYLEDGER>
+              <GSTOVERRIDDEN>No</GSTOVERRIDDEN>
+              <ISLASTDEEMEDPOSITIVE>Yes</ISLASTDEEMEDPOSITIVE>
+              <AMOUNT>-{grandTotal:F2}</AMOUNT>
+              <SERVICETATXDETAILS.LIST></SERVICETATXDETAILS.LIST>
+              <BANKALLOCATION.LIST></BANKALLOCATION.LIST>
+              <BILLALLOCATIONS.LIST></BILLALLOCATIONS.LIST>
+              <INTERESTCOLLECTION.LIST></INTERESTCOLLECTION.LIST>
+              <OLDAUDITENTRIES.LIST></OLDAUDITENTRIES.LIST>
+              <ACCOUNTAUDITENTRIES.LIST></ACCOUNTAUDITENTRIES.LIST>
+              <AUDITENTRIES.LIST></AUDITENTRIES.LIST>
+              <INPUTCRALOCS.LIST></INPUTCRALOCS.LIST>
+              <DUTYHEADDETAILS.LIST></DUTYHEADDETAILS.LIST>
+              <RATEDETAILS.LIST></RATEDETAILS.LIST>
+              <REFVOUCHERDETAILS.LIST></REFVOUCHERDETAILS.LIST>
+              <INVOICEWISEDETAILS.LIST></INVOICEWISEDETAILS.LIST>
+              <TAXTYPEALLOCATIONS.LIST></TAXTYPEALLOCATIONS.LIST>
+            </LEDGERENTRIES.LIST>");
+
+        // Tax ledgers
         if (order.TaxType == "IGST" && order.IGSTTotal > 0)
         {
-            taxXml.Append($@"
-          <ALLLEDGERENTRIES.LIST>
-            <LEDGERNAME>{Escape(igstLedger)}</LEDGERNAME>
-            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
-            <AMOUNT>-{order.IGSTTotal:F2}</AMOUNT>
-          </ALLLEDGERENTRIES.LIST>");
+            ledgersXml.Append(TaxLedgerEntry(igstLedger, order.IGSTTotal));
         }
         else if (order.TaxType == "CGST_SGST")
         {
-            if (order.CGSTTotal > 0)
-                taxXml.Append($@"
-          <ALLLEDGERENTRIES.LIST>
-            <LEDGERNAME>{Escape(cgstLedger)}</LEDGERNAME>
-            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
-            <AMOUNT>-{order.CGSTTotal:F2}</AMOUNT>
-          </ALLLEDGERENTRIES.LIST>");
-            if (order.SGSTTotal > 0)
-                taxXml.Append($@"
-          <ALLLEDGERENTRIES.LIST>
-            <LEDGERNAME>{Escape(sgstLedger)}</LEDGERNAME>
-            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
-            <AMOUNT>-{order.SGSTTotal:F2}</AMOUNT>
-          </ALLLEDGERENTRIES.LIST>");
+            if (order.CGSTTotal > 0) ledgersXml.Append(TaxLedgerEntry(cgstLedger, order.CGSTTotal));
+            if (order.SGSTTotal > 0) ledgersXml.Append(TaxLedgerEntry(sgstLedger, order.SGSTTotal));
         }
 
+        // Round Off
+        if (order.RoundOff != 0)
+        {
+            ledgersXml.Append($@"
+            <LEDGERENTRIES.LIST>
+              <OLDAUDITENTRYIDS.LIST TYPE=""Number""><OLDAUDITENTRYIDS>-1</OLDAUDITENTRYIDS></OLDAUDITENTRYIDS.LIST>
+              <ROUNDTYPE>Normal Rounding</ROUNDTYPE>
+              <LEDGERNAME>{Escape(roundOffLedger)}</LEDGERNAME>
+              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+              <LEDGERFROMITEM>No</LEDGERFROMITEM>
+              <REMOVEZEROENTRIES>No</REMOVEZEROENTRIES>
+              <ISPARTYLEDGER>No</ISPARTYLEDGER>
+              <GSTOVERRIDDEN>No</GSTOVERRIDDEN>
+              <ROUNDLIMIT> 1</ROUNDLIMIT>
+              <AMOUNT>{order.RoundOff:F2}</AMOUNT>
+              <VATEXPAMOUNT>{order.RoundOff:F2}</VATEXPAMOUNT>
+              <SERVICETATXDETAILS.LIST></SERVICETATXDETAILS.LIST>
+              <BANKALLOCATION.LIST></BANKALLOCATION.LIST>
+              <BILLALLOCATIONS.LIST></BILLALLOCATIONS.LIST>
+              <INTERESTCOLLECTION.LIST></INTERESTCOLLECTION.LIST>
+              <OLDAUDITENTRIES.LIST></OLDAUDITENTRIES.LIST>
+              <ACCOUNTAUDITENTRIES.LIST></ACCOUNTAUDITENTRIES.LIST>
+              <AUDITENTRIES.LIST></AUDITENTRIES.LIST>
+              <INPUTCRALOCS.LIST></INPUTCRALOCS.LIST>
+              <DUTYHEADDETAILS.LIST></DUTYHEADDETAILS.LIST>
+              <RATEDETAILS.LIST></RATEDETAILS.LIST>
+              <REFVOUCHERDETAILS.LIST></REFVOUCHERDETAILS.LIST>
+              <INVOICEWISEDETAILS.LIST></INVOICEWISEDETAILS.LIST>
+              <TAXTYPEALLOCATIONS.LIST></TAXTYPEALLOCATIONS.LIST>
+            </LEDGERENTRIES.LIST>");
+        }
+
+        // ── Party (buyer) GST / address details ─────────────────────────────
+        // Tally auto-fills these when a party is picked manually in its UI, but
+        // an XML import gets none of that for free — they must be sent explicitly
+        // or the voucher lands in Tally with a blank buyer address/GSTIN.
+        var partyGstin  = order.Ledger?.GSTNo?.Trim() ?? "";
+        var partyState  = order.Ledger?.State?.Trim() ?? "";
+        var partyAddressLines = (order.Ledger?.Address ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var addressXml = partyAddressLines.Length == 0 ? "" : $@"
+            <ADDRESS.LIST TYPE=""String"">{string.Concat(partyAddressLines.Select(a => $@"
+              <ADDRESS>{Escape(a)}</ADDRESS>"))}
+            </ADDRESS.LIST>
+            <BASICBUYERADDRESS.LIST TYPE=""String"">{string.Concat(partyAddressLines.Select(a => $@"
+              <BASICBUYERADDRESS>{Escape(a)}</BASICBUYERADDRESS>"))}
+            </BASICBUYERADDRESS.LIST>";
+        var gstRegistrationType = string.IsNullOrEmpty(partyGstin) ? "Unregistered" : "Regular";
+        var hasDiscounts = order.Items.Any(i => i.Discount > 0) ? "Yes" : "No";
+
         var xml = $@"<ENVELOPE>
-  <HEADER><VERSION>1</VERSION><TALLYREQUEST>Import</TALLYREQUEST><TYPE>Data</TYPE><ID>Vouchers</ID></HEADER>
-  <BODY><DESC/>
-    <DATA>
-      <TALLYMESSAGE xmlns:UDF=""TallyUDF"">
-        <VOUCHER VCHTYPE=""Sales Order"" ACTION=""Create"">
-          <DATE>{dateStr}</DATE>
-          <NARRATION>{Escape(order.Narration ?? string.Empty)}</NARRATION>
-          <VOUCHERTYPENAME>Sales Order</VOUCHERTYPENAME>
-          <VOUCHERNUMBER>{Escape(order.OrderNo)}</VOUCHERNUMBER>
-          <PARTYLEDGERNAME>{Escape(order.LedgerName)}</PARTYLEDGERNAME>
-          <ALLLEDGERENTRIES.LIST>
-            <LEDGERNAME>{Escape(order.LedgerName)}</LEDGERNAME>
-            <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
-            <AMOUNT>-{grandTotal:F2}</AMOUNT>
-          </ALLLEDGERENTRIES.LIST>
-          {taxXml}
-          {itemsXml}
-        </VOUCHER>
-      </TALLYMESSAGE>
-    </DATA>
+  <HEADER>
+    <TALLYREQUEST>Import Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <IMPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>Vouchers</REPORTNAME>
+        <STATICVARIABLES>
+          <SVCURRENTCOMPANY>{Escape(companyName)}</SVCURRENTCOMPANY>
+        </STATICVARIABLES>
+      </REQUESTDESC>
+      <REQUESTDATA>
+        <TALLYMESSAGE xmlns:UDF=""TallyUDF"">
+          <VOUCHER REMOTEID=""{remoteId}"" VCHTYPE=""{Escape(voucherType)}"" ACTION=""{action}"" OBJVIEW=""Invoice Voucher View"">{addressXml}
+            <DATE>{dateStr}</DATE>
+            <EFFECTIVEDATE>{dateStr}</EFFECTIVEDATE>
+            <NARRATION>{Escape(narration)}</NARRATION>
+            <OBJECTUPDATEACTION>{action}</OBJECTUPDATEACTION>
+            <COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE>
+            {(string.IsNullOrEmpty(partyGstin) ? "" : $"<PARTYGSTIN>{Escape(partyGstin)}</PARTYGSTIN>")}
+            {(string.IsNullOrEmpty(partyState) ? "" : $@"<STATENAME>{Escape(partyState)}</STATENAME>
+            <PLACEOFSUPPLY>{Escape(partyState)}</PLACEOFSUPPLY>")}
+            <GSTREGISTRATIONTYPE>{gstRegistrationType}</GSTREGISTRATIONTYPE>
+            <CONSIGNEECOUNTRYNAME>India</CONSIGNEECOUNTRYNAME>
+            {(string.IsNullOrEmpty(partyGstin) ? "" : $"<CONSIGNEEGSTIN>{Escape(partyGstin)}</CONSIGNEEGSTIN>")}
+            {(string.IsNullOrEmpty(partyState) ? "" : $"<CONSIGNEESTATENAME>{Escape(partyState)}</CONSIGNEESTATENAME>")}
+            <VOUCHERTYPENAME>{Escape(voucherType)}</VOUCHERTYPENAME>
+            <PARTYNAME>{Escape(order.LedgerName)}</PARTYNAME>
+            <PARTYLEDGERNAME>{Escape(order.LedgerName)}</PARTYLEDGERNAME>
+            <PARTYMAILINGNAME>{Escape(order.LedgerName)}</PARTYMAILINGNAME>
+            <BASICBUYERNAME>{Escape(order.LedgerName)}</BASICBUYERNAME>
+            <REFERENCE>{Escape(order.OrderNo)}</REFERENCE>
+            <ISINVOICE>No</ISINVOICE>
+            <ISOPTIONAL>No</ISOPTIONAL>
+            <HASDISCOUNTS>{hasDiscounts}</HASDISCOUNTS>
+            {itemsXml}
+            {ledgersXml}
+            <CONTRITRANS.LIST></CONTRITRANS.LIST>
+            <GST.LIST></GST.LIST>
+            <PAYROLLMODEOFPAYMENT.LIST></PAYROLLMODEOFPAYMENT.LIST>
+          </VOUCHER>
+        </TALLYMESSAGE>
+      </REQUESTDATA>
+    </IMPORTDATA>
   </BODY>
 </ENVELOPE>";
 
@@ -309,54 +540,235 @@ public class TallyService
         if (doc.Descendants("CREATED").FirstOrDefault()?.Value == "1") return (true, "Synced");
         if (doc.Descendants("ALTERED").FirstOrDefault()?.Value == "1") return (true, "Updated");
 
-        return (false, doc.ToString()[..Math.Min(200, doc.ToString().Length)]);
+        var raw = doc.ToString();
+        return (false, raw[..Math.Min(300, raw.Length)]);
     }
 
-    // Checks if a sales order has been converted to an invoice in Tally
-    public async Task<(bool IsInvoiced, string? InvoiceNo, DateTime? InvoiceDate)> CheckInvoiceStatusAsync(
-        string tallyUrl, string companyName, string orderNo)
+    private static string TaxLedgerEntry(string ledgerName, decimal amount) => $@"
+            <LEDGERENTRIES.LIST>
+              <OLDAUDITENTRYIDS.LIST TYPE=""Number""><OLDAUDITENTRYIDS>-1</OLDAUDITENTRYIDS></OLDAUDITENTRYIDS.LIST>
+              <LEDGERNAME>{Escape(ledgerName)}</LEDGERNAME>
+              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+              <LEDGERFROMITEM>No</LEDGERFROMITEM>
+              <REMOVEZEROENTRIES>No</REMOVEZEROENTRIES>
+              <ISPARTYLEDGER>No</ISPARTYLEDGER>
+              <GSTOVERRIDDEN>No</GSTOVERRIDDEN>
+              <AMOUNT>{amount:F2}</AMOUNT>
+              <VATEXPAMOUNT>{amount:F2}</VATEXPAMOUNT>
+              <SERVICETATXDETAILS.LIST></SERVICETATXDETAILS.LIST>
+              <BANKALLOCATION.LIST></BANKALLOCATION.LIST>
+              <BILLALLOCATIONS.LIST></BILLALLOCATIONS.LIST>
+              <INTERESTCOLLECTION.LIST></INTERESTCOLLECTION.LIST>
+              <OLDAUDITENTRIES.LIST></OLDAUDITENTRIES.LIST>
+              <ACCOUNTAUDITENTRIES.LIST></ACCOUNTAUDITENTRIES.LIST>
+              <AUDITENTRIES.LIST></AUDITENTRIES.LIST>
+              <INPUTCRALOCS.LIST></INPUTCRALOCS.LIST>
+              <DUTYHEADDETAILS.LIST></DUTYHEADDETAILS.LIST>
+              <RATEDETAILS.LIST></RATEDETAILS.LIST>
+              <REFVOUCHERDETAILS.LIST></REFVOUCHERDETAILS.LIST>
+              <INVOICEWISEDETAILS.LIST></INVOICEWISEDETAILS.LIST>
+              <TAXTYPEALLOCATIONS.LIST></TAXTYPEALLOCATIONS.LIST>
+            </LEDGERENTRIES.LIST>";
+
+    private static int TallyJd(DateTime date) =>
+        (int)(date.Date - new DateTime(1899, 12, 30)).TotalDays;
+
+    // Creates a new party ledger master in Tally (Masters > Party Master feature).
+    // GST/address live under LEDGSTREGDETAILS.LIST / LEDMAILINGDETAILS.LIST in
+    // current Tally releases (confirmed against a real ledger export) — the
+    // flat STATENAME/PARTYGSTIN/LEDGERPHONE tags used by older schemas are
+    // silently ignored here, which is why an earlier version of this method
+    // saved the party locally but the GST/address never actually landed in Tally.
+    //
+    // FSSAINo has no standard Tally field — some installs expose it via a
+    // custom TDL "User Defined Field" (e.g. UDF:_UDF_788534681), but that
+    // field's internal ID is assigned per-install and isn't portable across
+    // Tally companies. fssaiUdfField is admin-configured (Settings > Order
+    // Defaults) specifically so this stays a no-op — FSSAI simply isn't sent —
+    // on any install that hasn't defined a matching UDF, instead of guessing
+    // and risking a rejected import or a value landing in the wrong field.
+    public async Task<(bool Success, string Message)> PushLedgerAsync(
+        string tallyUrl, Ledger ledger, string companyName, string? fssaiUdfField = null)
+    {
+        var today = DateTime.Today.ToString("yyyyMMdd");
+        var hasGstin = !string.IsNullOrWhiteSpace(ledger.GSTNo);
+        var hasState = !string.IsNullOrWhiteSpace(ledger.State);
+
+        var udfFieldName = fssaiUdfField?.Trim().Replace("UDF:", "", StringComparison.OrdinalIgnoreCase).Trim();
+        var udfXml = string.IsNullOrWhiteSpace(udfFieldName) || string.IsNullOrWhiteSpace(ledger.FSSAINo)
+            ? ""
+            : $@"
+            <UDF:{udfFieldName}.LIST DESC="""" ISLIST=""YES"" TYPE=""String"">
+              <UDF:{udfFieldName} DESC="""">{Escape(ledger.FSSAINo)}</UDF:{udfFieldName}>
+            </UDF:{udfFieldName}.LIST>";
+
+        var addressLines = (ledger.Address ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var addressXml = addressLines.Length == 0 ? "" : $@"
+              <ADDRESS.LIST TYPE=""String"">{string.Concat(addressLines.Select(a => $@"
+                <ADDRESS>{Escape(a)}</ADDRESS>"))}
+              </ADDRESS.LIST>";
+
+        var gstRegDetailsXml = $@"
+            <LEDGSTREGDETAILS.LIST>
+              <APPLICABLEFROM>{today}</APPLICABLEFROM>
+              <GSTREGISTRATIONTYPE>{(hasGstin ? "Regular" : "Unregistered")}</GSTREGISTRATIONTYPE>
+              {(hasState ? $"<STATE>{Escape(ledger.State!)}</STATE>" : "")}
+              {(hasState ? $"<PLACEOFSUPPLY>{Escape(ledger.State!)}</PLACEOFSUPPLY>" : "")}
+              {(hasGstin ? $"<GSTIN>{Escape(ledger.GSTNo!)}</GSTIN>" : "")}
+            </LEDGSTREGDETAILS.LIST>";
+
+        var mailingDetailsXml = $@"
+            <LEDMAILINGDETAILS.LIST>{addressXml}
+              <APPLICABLEFROM>{today}</APPLICABLEFROM>
+              <MAILINGNAME>{Escape(ledger.LedgerName)}</MAILINGNAME>
+              {(hasState ? $"<STATE>{Escape(ledger.State!)}</STATE>" : "")}
+              <COUNTRY>India</COUNTRY>
+            </LEDMAILINGDETAILS.LIST>";
+
+        var xml = $@"<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Import Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <IMPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>All Masters</REPORTNAME>
+        <STATICVARIABLES>
+          <SVCURRENTCOMPANY>{Escape(companyName)}</SVCURRENTCOMPANY>
+        </STATICVARIABLES>
+      </REQUESTDESC>
+      <REQUESTDATA>
+        <TALLYMESSAGE xmlns:UDF=""TallyUDF"">
+          <LEDGER NAME=""{Escape(ledger.LedgerName)}"" ACTION=""Create"">
+            <NAME>{Escape(ledger.LedgerName)}</NAME>
+            <PARENT>Sundry Debtors</PARENT>
+            <ISBILLWISEON>Yes</ISBILLWISEON>
+            <COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE>
+            {(string.IsNullOrWhiteSpace(ledger.MobileNo) ? "" : $"<LEDGERMOBILE>{Escape(ledger.MobileNo)}</LEDGERMOBILE>")}{gstRegDetailsXml}{mailingDetailsXml}{udfXml}
+          </LEDGER>
+        </TALLYMESSAGE>
+      </REQUESTDATA>
+    </IMPORTDATA>
+  </BODY>
+</ENVELOPE>";
+
+        var doc = await PostXmlAsync(tallyUrl, xml);
+        if (doc == null) return (false, "Could not connect to Tally");
+
+        var lineError = doc.Descendants("LINEERROR").FirstOrDefault()?.Value;
+        if (!string.IsNullOrEmpty(lineError)) return (false, lineError);
+
+        if (doc.Descendants("CREATED").FirstOrDefault()?.Value == "1") return (true, "Created in Tally");
+        if (doc.Descendants("ALTERED").FirstOrDefault()?.Value == "1") return (true, "Updated in Tally");
+
+        var raw = doc.ToString();
+        return (false, raw[..Math.Min(300, raw.Length)]);
+    }
+
+    public class InvoiceLookupRecord
+    {
+        public string? InvoiceNo { get; set; }
+        public DateTime? InvoiceDate { get; set; }
+        public List<string> OrderRefs { get; set; } = new();
+    }
+
+    // Fetches Sales vouchers in [fromDate, today] ONCE, so a whole batch of
+    // pending orders can be matched against a single Tally round-trip.
+    //
+    // This replaces the old per-order CheckInvoiceStatusAsync, which queried
+    // Tally's *entire* Sales voucher history (no date bound at all) once for
+    // EVERY uninvoiced order — up to 50 full-history scans every
+    // OrderPushIntervalMinutes. On a client install with several years of
+    // sales history, that was enough to crash Tally's native HTTP engine
+    // outright (STATUS_ACCESS_VIOLATION / c0000005) — confirmed by the error
+    // stopping the moment the IIS site (and so this background job) was
+    // stopped. Bounding by date and fetching once per company per cycle
+    // fixes both the crash and the wasted repeated full-history scans.
+    //
+    // No EXPLODEVCHTYPE: comparing against a reference project (LoheBgService)
+    // that reliably imports/reads 200-300 Tally records per run without ever
+    // crashing Tally — its only EXPORT query is a single exact-name-filtered
+    // ledger lookup, never a bulk voucher scan with that flag set. REFERENCE
+    // and INVOICEORDERLIST.LIST are both generic Voucher fields present on
+    // every voucher type regardless of class, so forcing full type-hierarchy
+    // resolution for each one was unnecessary overhead, not a requirement.
+    public async Task<List<InvoiceLookupRecord>> GetRecentSalesInvoicesAsync(
+        string tallyUrl, string companyName, DateTime fromDate)
     {
         var xml = $@"<ENVELOPE>
   <HEADER><VERSION>1</VERSION><TALLYREQUEST>EXPORT</TALLYREQUEST><TYPE>COLLECTION</TYPE><ID>InvCheck</ID></HEADER>
   <BODY><DESC>
     <STATICVARIABLES>
       <SVCURRENTCOMPANY>{Escape(companyName)}</SVCURRENTCOMPANY>
+      <SVFROMDATE TYPE=""Date"">{fromDate:yyyyMMdd}</SVFROMDATE>
+      <SVTODATE TYPE=""Date"">{DateTime.Today:yyyyMMdd}</SVTODATE>
       <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
     </STATICVARIABLES>
     <TDL><TDLMESSAGE>
       <COLLECTION NAME=""InvCheck"" ISINITIALIZE=""Yes"">
         <TYPE>Voucher</TYPE>
-        <FILTERS>IsSales</FILTERS>
-        <FETCH>VoucherNumber,Date,VoucherTypeName,ORDERLIST</FETCH>
+        <FILTER>IsSales</FILTER>
+        <FETCH>VoucherNumber,Date,VoucherTypeName,Reference,InvoiceOrderList.List:BasicPurchaseOrderNo</FETCH>
       </COLLECTION>
-      <SYSTEM:FORM NAME=""IsSales"">$$IsEqual:$VoucherTypeName:&quot;Sales&quot;</SYSTEM:FORM>
+      <SYSTEM TYPE=""Formulae"" NAME=""IsSales"">$$IsEqual:$VoucherTypeName:&quot;Sales&quot;</SYSTEM>
     </TDLMESSAGE></TDL>
   </DESC></BODY>
 </ENVELOPE>";
 
         var doc = await PostXmlAsync(tallyUrl, xml);
-        if (doc == null) return (false, null, null);
+        if (doc == null) return new();
 
+        var results = new List<InvoiceLookupRecord>();
         foreach (var vch in doc.Descendants("VOUCHER"))
         {
-            var orderLists = vch.Descendants("ORDERLIST");
-            foreach (var ol in orderLists)
-            {
-                if (string.Equals(ol.Element("ORDERNAME")?.Value?.Trim(), orderNo, StringComparison.OrdinalIgnoreCase))
-                {
-                    var invNo   = vch.Element("VOUCHERNUMBER")?.Value?.Trim();
-                    var dateVal = vch.Element("DATE")?.Value?.Trim();
-                    DateTime? invDate = null;
-                    if (dateVal?.Length == 8 &&
-                        DateTime.TryParseExact(dateVal, "yyyyMMdd", null,
-                            System.Globalization.DateTimeStyles.None, out var d))
-                        invDate = d;
-                    return (true, invNo, invDate);
-                }
-            }
-        }
+            // Two independent places carry the originating SO number on a real
+            // Tally invoice: the flat REFERENCE field (Tally auto-fills this with
+            // the order number when the invoice is raised "against" an order —
+            // confirmed on a real exported invoice), and the structured
+            // INVOICEORDERLIST.LIST > BASICPURCHASEORDERNO. REFERENCE is a plain
+            // scalar so it fetches reliably; the nested list has proven unreliable
+            // to populate via a narrow COLLECTION FETCH, so it's kept only as a
+            // fallback in case REFERENCE isn't set on some invoices.
+            var reference = vch.Element("REFERENCE")?.Value?.Trim();
+            var orderRefs = vch.Descendants("INVOICEORDERLIST.LIST")
+                .Select(ol => ol.Element("BASICPURCHASEORDERNO")?.Value?.Trim())
+                .Append(reference)
+                .Where(o => !string.IsNullOrWhiteSpace(o))
+                .Select(o => o!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (orderRefs.Count == 0) continue;
 
-        return (false, null, null);
+            var dateVal = vch.Element("DATE")?.Value?.Trim();
+            DateTime? invDate = null;
+            if (dateVal?.Length == 8 &&
+                DateTime.TryParseExact(dateVal, "yyyyMMdd", null,
+                    System.Globalization.DateTimeStyles.None, out var d))
+                invDate = d;
+
+            results.Add(new InvoiceLookupRecord
+            {
+                InvoiceNo = vch.Element("VOUCHERNUMBER")?.Value?.Trim(),
+                InvoiceDate = invDate,
+                OrderRefs = orderRefs
+            });
+        }
+        return results;
+    }
+
+    // Matches one order number against an already-fetched invoice list —
+    // call GetRecentSalesInvoicesAsync once per company per cycle, then this
+    // per order, instead of hitting Tally again for every order.
+    public static bool TryMatchInvoice(
+        List<InvoiceLookupRecord> invoices, string orderNo,
+        out string? invoiceNo, out DateTime? invoiceDate)
+    {
+        var match = invoices.FirstOrDefault(inv =>
+            inv.OrderRefs.Any(r => string.Equals(r, orderNo, StringComparison.OrdinalIgnoreCase)));
+        invoiceNo = match?.InvoiceNo;
+        invoiceDate = match?.InvoiceDate;
+        return match != null;
     }
 
     public async Task<(bool Reachable, List<string> OpenCompanies)> CheckStatusAsync(string tallyUrl)
@@ -465,5 +877,14 @@ public class TallyService
         val = val.Replace(" Dr", "").Replace(" Cr", "").Trim();
         return decimal.TryParse(val, System.Globalization.NumberStyles.Any,
             System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : 0;
+    }
+
+    // Tally exports voucher line RATE as "100.00/Nos" — strip the unit suffix.
+    private static decimal ParseRate(string? val)
+    {
+        if (string.IsNullOrWhiteSpace(val)) return 0;
+        var slashIdx = val.IndexOf('/');
+        if (slashIdx > 0) val = val[..slashIdx];
+        return ParseDecimal(val);
     }
 }

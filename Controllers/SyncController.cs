@@ -15,12 +15,18 @@ public class SyncController : Controller
     private readonly AppDbContext _db;
     private readonly TallyService _tally;
     private readonly UserManager<AppUser> _userManager;
+    private readonly UserActivityService _activity;
+    private readonly SyncCoordinator _coordinator;
+    private readonly IConfiguration _config;
 
-    public SyncController(AppDbContext db, TallyService tally, UserManager<AppUser> userManager)
+    public SyncController(AppDbContext db, TallyService tally, UserManager<AppUser> userManager, UserActivityService activity, SyncCoordinator coordinator, IConfiguration config)
     {
         _db = db;
         _tally = tally;
         _userManager = userManager;
+        _activity = activity;
+        _coordinator = coordinator;
+        _config = config;
     }
 
     [HttpPost("trigger-masters")]
@@ -28,6 +34,42 @@ public class SyncController : Controller
     {
         var user = await _userManager.GetUserAsync(User);
         if (user == null) return Unauthorized();
+        if (user.Role != AppRoles.Admin) return Forbid();
+
+        if (TallySyncMode.IsAgentManaged(_config))
+        {
+            return Ok(new
+            {
+                success = true,
+                status = "delegated",
+                message = "This app doesn't talk to Tally directly — the SaleOrd Sync Agent handles syncing. Check its Status tab for the latest sync time."
+            });
+        }
+
+        if (!_coordinator.TryStart())
+        {
+            return Ok(new
+            {
+                success = false,
+                status = "busy",
+                message = "A sync is already in progress. Please wait for it to finish."
+            });
+        }
+
+        try
+        {
+            return await RunSyncAsync(user);
+        }
+        finally
+        {
+            _coordinator.Finish();
+        }
+    }
+
+    private async Task<IActionResult> RunSyncAsync(AppUser user)
+    {
+        await _activity.LogAsync(user.Id, user.FullName, user.Role, ActivityActions.SyncTriggered,
+            companyId: user.CompanyId);
 
         var tallyUrl = await _db.AppSettings
             .Where(s => s.Key == "TallyUrl")
@@ -87,17 +129,29 @@ public class SyncController : Controller
 
         try
         {
-            int totalLedgers = 0, totalItems = 0, totalGodowns = 0;
+            int totalLedgers = 0, totalItems = 0, totalGodowns = 0, totalRates = 0;
 
-            foreach (var company in toSync)
+            for (int ci = 0; ci < toSync.Count; ci++)
             {
+                var company = toSync[ci];
+
+                // Paced, not back-to-back — hammering Tally's HTTP gateway
+                // with rapid-fire requests (masters + rates + then, further
+                // down, every pending order's push) was found to crash Tally
+                // itself with a memory access violation on a client install.
                 var ledgers = await _tally.GetLedgersAsync(tallyUrl, company);
+                await Task.Delay(500);
                 var items = await _tally.GetStockItemsAsync(tallyUrl, company);
+                await Task.Delay(500);
                 var godowns = await _tally.GetGodownsAsync(tallyUrl, company);
+                await Task.Delay(500);
 
                 await UpsertLedgersAsync(company.CompanyId, ledgers);
                 await UpsertItemsAsync(company.CompanyId, items);
                 await UpsertGodownsAsync(company.CompanyId, godowns);
+
+                var rates = await _tally.GetLastSaleRatesAsync(tallyUrl, company);
+                await UpsertLastSaleRatesAsync(company.CompanyId, rates);
 
                 company.LastMasterSyncAt = DateTime.Now;
                 _db.SyncLogs.Add(new SyncLog
@@ -105,26 +159,44 @@ public class SyncController : Controller
                     CompanyId = company.CompanyId,
                     SyncType = "ManualSync",
                     IsSuccess = true,
-                    Message = $"[{company.CompanyName}] Ledgers: {ledgers.Count}, Items: {items.Count}, Godowns: {godowns.Count}"
+                    Message = $"[{company.CompanyName}] Ledgers: {ledgers.Count}, Items: {items.Count}, Godowns: {godowns.Count}, Rates: {rates.Count}"
                 });
+
+                if (ci < toSync.Count - 1)
+                    await Task.Delay(800);
 
                 totalLedgers += await _db.Ledgers.CountAsync(l => l.CompanyId == company.CompanyId);
                 totalItems += await _db.StockItems.CountAsync(s => s.CompanyId == company.CompanyId);
                 totalGodowns += await _db.Godowns.CountAsync(g => g.CompanyId == company.CompanyId);
+                totalRates += await _db.LastSaleRates.CountAsync(r => r.CompanyId == company.CompanyId);
             }
 
             await _db.SaveChangesAsync();
 
+            var (ordersPushed, ordersFailed) = await PushPendingOrdersAsync(tallyUrl, toSync);
+            var invoicesFound = await CheckInvoiceStatusAsync(toSync);
+
             var syncedNames = string.Join(", ", toSync.Select(c => c.CompanyName));
+            var extra = new List<string>();
+            if (ordersPushed > 0) extra.Add($"{ordersPushed} order(s) pushed");
+            if (ordersFailed > 0) extra.Add($"{ordersFailed} order push failure(s)");
+            if (invoicesFound > 0) extra.Add($"{invoicesFound} invoice(s) found");
+            var message = $"Synced {toSync.Count} company(s): {syncedNames}";
+            if (extra.Any()) message += " — " + string.Join(", ", extra);
+
             return Ok(new
             {
                 success = true,
                 status = "online",
-                message = $"Synced {toSync.Count} company(s): {syncedNames}",
+                message,
                 syncedAt = DateTime.Now.ToString("dd MMM, h:mm tt"),
                 ledgers = totalLedgers,
                 items = totalItems,
-                godowns = totalGodowns
+                godowns = totalGodowns,
+                rates = totalRates,
+                ordersPushed,
+                ordersFailed,
+                invoicesFound
             });
         }
         catch (Exception ex)
@@ -327,6 +399,167 @@ public class SyncController : Controller
         }
 
         await _db.SaveChangesAsync();
+    }
+
+    private async Task UpsertLastSaleRatesAsync(int companyId, List<SaleRateRecord> rates)
+    {
+        if (!rates.Any()) return;
+
+        var ledgerIds = (await _db.Ledgers
+                .Where(l => l.CompanyId == companyId)
+                .Select(l => new { l.LedgerId, l.LedgerName })
+                .ToListAsync())
+            .GroupBy(l => NormalizeName(l.LedgerName), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Last().LedgerId, StringComparer.OrdinalIgnoreCase);
+
+        var itemIds = (await _db.StockItems
+                .Where(s => s.CompanyId == companyId)
+                .Select(s => new { s.StockItemId, s.ItemName })
+                .ToListAsync())
+            .GroupBy(s => NormalizeName(s.ItemName), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Last().StockItemId, StringComparer.OrdinalIgnoreCase);
+
+        var existing = (await _db.LastSaleRates
+                .Where(r => r.CompanyId == companyId)
+                .ToListAsync())
+            .ToDictionary(r => (r.LedgerId, r.StockItemId));
+
+        var now = DateTime.Now;
+        foreach (var rate in rates)
+        {
+            if (!ledgerIds.TryGetValue(NormalizeName(rate.PartyName), out var ledgerId)) continue;
+            if (!itemIds.TryGetValue(NormalizeName(rate.ItemName), out var stockItemId)) continue;
+
+            var key = (ledgerId, stockItemId);
+            if (existing.TryGetValue(key, out var ex))
+            {
+                ex.Rate = rate.Rate;
+                ex.SaleDate = rate.SaleDate;
+                ex.LastSyncedAt = now;
+            }
+            else
+            {
+                var newRate = new LastSaleRate
+                {
+                    CompanyId = companyId,
+                    LedgerId = ledgerId,
+                    StockItemId = stockItemId,
+                    Rate = rate.Rate,
+                    SaleDate = rate.SaleDate,
+                    LastSyncedAt = now
+                };
+                _db.LastSaleRates.Add(newRate);
+                existing[key] = newRate;
+            }
+        }
+
+        await _db.SaveChangesAsync();
+    }
+
+    private async Task<(int Pushed, int Failed)> PushPendingOrdersAsync(string tallyUrl, List<Company> companies)
+    {
+        var companyIds = companies.Select(c => c.CompanyId).ToList();
+
+        var settings = await _db.AppSettings.ToListAsync();
+        string Setting(string key, string def) =>
+            settings.FirstOrDefault(s => s.Key == key)?.Value ?? def;
+
+        var igstLedger     = Setting("TaxLedgerIGST",      "IGST");
+        var cgstLedger     = Setting("TaxLedgerCGST",      "CGST");
+        var sgstLedger     = Setting("TaxLedgerSGST",      "SGST");
+        var salesLedger    = Setting("SalesLedger",        "Sales");
+        var roundOffLedger = Setting("TaxLedgerRoundOff",  "Round Off");
+        var voucherType    = Setting("DefaultVoucherType", "Sales Order");
+        var batchName      = Setting("DefaultBatchName",   "Primary Batch");
+
+        var pendingOrders = await _db.SaleOrders
+            .Include(o => o.Items)
+            .Include(o => o.Company)
+            .Include(o => o.Ledger)
+            .Where(o => companyIds.Contains(o.CompanyId) && o.Status == OrderStatus.Pending)
+            .ToListAsync();
+
+        int pushed = 0, failed = 0;
+        for (int i = 0; i < pendingOrders.Count; i++)
+        {
+            var order = pendingOrders[i];
+            var companyName = order.Company?.TallyCompanyName ?? string.Empty;
+            var isAlter     = !string.IsNullOrEmpty(order.TallyVoucherNo);
+
+            var (success, message) = await _tally.PushSaleOrderAsync(
+                tallyUrl, order, companyName,
+                salesLedger, igstLedger, cgstLedger, sgstLedger,
+                roundOffLedger, isAlter, voucherType, batchName);
+
+            order.Status = success ? OrderStatus.Synced : OrderStatus.Error;
+            order.SyncedAt = DateTime.Now;
+            order.TallyVoucherNo = success ? order.OrderNo : null;
+            order.SyncError = success ? null : message;
+
+            if (success) pushed++; else failed++;
+
+            _db.SyncLogs.Add(new SyncLog
+            {
+                CompanyId = order.CompanyId,
+                SyncType = "OrderPush",
+                IsSuccess = success,
+                Message = $"Order {order.OrderNo}: {message}"
+            });
+
+            // See OrderPushJob's identical pacing note — rapid-fire pushes
+            // with no spacing were implicated in crashing Tally's process.
+            if (i < pendingOrders.Count - 1)
+                await Task.Delay(800);
+        }
+
+        if (pendingOrders.Any())
+            await _db.SaveChangesAsync();
+
+        return (pushed, failed);
+    }
+
+    private async Task<int> CheckInvoiceStatusAsync(List<Company> companies)
+    {
+        var companyIds = companies.Select(c => c.CompanyId).ToList();
+
+        var orders = await _db.SaleOrders
+            .Include(o => o.Company)
+            .Where(o => companyIds.Contains(o.CompanyId) && o.Status == OrderStatus.Synced && !o.IsInvoiced)
+            .OrderBy(o => o.SaleOrderId)
+            .Take(50)
+            .ToListAsync();
+
+        if (!orders.Any()) return 0;
+
+        int found = 0;
+        // One Tally round-trip per company for this whole batch, not one per
+        // order — see TallyService.GetRecentSalesInvoicesAsync for why.
+        var groups = orders.Where(o => o.Company != null).GroupBy(o => o.Company!).ToList();
+        for (int g = 0; g < groups.Count; g++)
+        {
+            var company = groups[g].Key;
+            var tallyUrl = $"http://{company.TallyIp}:{company.TallyPort}";
+            var fromDate = groups[g].Min(o => o.OrderDate);
+
+            var invoices = await _tally.GetRecentSalesInvoicesAsync(tallyUrl, company.TallyCompanyName, fromDate);
+
+            foreach (var order in groups[g])
+            {
+                if (TallyService.TryMatchInvoice(invoices, order.OrderNo, out var invNo, out var invDate))
+                {
+                    order.IsInvoiced       = true;
+                    order.TallyInvoiceNo   = invNo;
+                    order.TallyInvoiceDate = invDate;
+                    found++;
+                }
+            }
+
+            if (g < groups.Count - 1)
+                await Task.Delay(800);
+        }
+
+        if (found > 0) await _db.SaveChangesAsync();
+        return found;
     }
 
     private static IEnumerable<T> DeduplicateByName<T>(

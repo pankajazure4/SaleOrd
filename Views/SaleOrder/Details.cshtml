@@ -32,9 +32,9 @@
     </div>
     <div class="d-flex gap-2 align-items-center">
         <span class="badge bg-@statusClass">@Model.Status</span>
-        <button class="btn btn-sm btn-outline-secondary no-print" onclick="window.print()">
+        <a href="/SaleOrder/Print/@Model.SaleOrderId" target="_blank" class="btn btn-sm btn-outline-secondary no-print" title="Print">
             <i class="bi bi-printer"></i>
-        </button>
+        </a>
     </div>
 </div>
 
@@ -189,8 +189,7 @@
 <!-- Actions -->
 @{
     bool canEditNow = !Model.IsInvoiced
-        && (Model.EditDeadline == null || DateTime.Now <= Model.EditDeadline.Value)
-        && Model.Status.ToString() != "Synced";
+        && (Model.EditDeadline == null || DateTime.Now <= Model.EditDeadline.Value);
 }
 <div class="form-actions">
     @if (canEditNow)

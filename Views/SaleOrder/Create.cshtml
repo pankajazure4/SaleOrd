@@ -76,29 +76,10 @@
 
             <div class="col-4 col-md-2">
                 <label class="form-label small fw-semibold mb-1">Rate <span class="text-danger">*</span></label>
-                <input type="number" id="entryRate" class="form-control form-control-sm text-end" min="0" step="0.01" placeholder="0.00" />
+                <input type="number" id="entryRate" class="form-control form-control-sm text-end" min="0" step="0.01" placeholder="0.00" title="Auto-filled from this customer's last rate for the item — editable" />
             </div>
 
-            <div class="col-4 col-md-1">
-                <label class="form-label small fw-semibold mb-1">Disc %</label>
-                <input type="number" id="entryDisc" class="form-control form-control-sm text-end" min="0" max="100" value="0" />
-            </div>
-
-            <div class="col-12 col-md-2">
-                <label class="form-label small fw-semibold mb-1">Godown</label>
-                <select id="entryGodown" class="form-select form-select-sm">
-                    <option value="">Select Godown</option>
-                    @if (ViewBag.Godowns != null)
-                    {
-                        foreach (var g in (IEnumerable<dynamic>)ViewBag.Godowns)
-                        {
-                            <option value="@g.GodownId">@g.GodownName</option>
-                        }
-                    }
-                </select>
-            </div>
-
-            <div class="col-12 col-md-1 d-flex gap-1 justify-content-end">
+            <div class="col-12 col-md-3 d-flex gap-1 justify-content-end">
                 <button type="button" id="btnCancelEdit" class="btn btn-sm btn-outline-secondary w-100" style="display:none" onclick="cancelEditItem()" title="Cancel Edit">
                     <i class="bi bi-x-lg"></i>
                 </button>
@@ -117,7 +98,6 @@
                         <th>Item Details</th>
                         <th class="text-end" style="width: 15%">Qty</th>
                         <th class="text-end" style="width: 15%">Rate</th>
-                        <th class="text-end" style="width: 10%">Disc%</th>
                         <th class="text-end" style="width: 15%">Amount</th>
                         <th class="text-center" style="width: 12%">Actions</th>
                     </tr>
@@ -127,7 +107,7 @@
                 </tbody>
                 <tfoot>
                     <tr class="fw-semibold bg-light">
-                        <td colspan="5" class="text-end">Sub Total:</td>
+                        <td colspan="4" class="text-end">Sub Total:</td>
                         <td class="text-end text-secondary fw-bold" id="grandTotalLabel">₹ 0.00</td>
                         <td></td>
                     </tr>
@@ -154,29 +134,21 @@
 
     <!-- Tax & Totals Section -->
     <div class="card p-3 mb-3">
-        <div class="fw-semibold mb-3">Tax &amp; Totals</div>
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <span class="fw-semibold">Totals</span>
+            @if ((string)(ViewBag.DefaultTaxType ?? "None") != "None" && (decimal)(ViewBag.DefaultTaxPercent ?? 0m) > 0)
+            {
+                <span class="badge bg-info text-dark">@ViewBag.DefaultTaxType @ViewBag.DefaultTaxPercent%</span>
+            }
+        </div>
 
         <input type="hidden" asp-for="TaxType"    id="hidTaxType" />
         <input type="hidden" asp-for="TaxPercent" id="hidTaxPercent" />
         <input type="hidden" asp-for="TaxTotal"   id="hidTaxTotal" />
         <input type="hidden" asp-for="RoundOff"   id="hidRoundOff" />
         <input type="hidden" asp-for="GrandTotal" id="hidGrandTotal" />
-
-        <div class="row g-2 mb-3">
-            <div class="col-12 col-md-4">
-                <label class="form-label small fw-semibold">Tax Type</label>
-                <select id="taxTypeSelect" class="form-select form-select-sm" onchange="recalcTotals()">
-                    <option value="None">No Tax</option>
-                    <option value="IGST">IGST</option>
-                    <option value="CGST_SGST">CGST + SGST</option>
-                </select>
-            </div>
-            <div class="col-6 col-md-3">
-                <label class="form-label small fw-semibold">Tax %</label>
-                <input type="number" id="taxPercentInput" class="form-control form-control-sm text-end"
-                       min="0" max="100" step="0.01" value="0" placeholder="0.00" oninput="recalcTotals()" />
-            </div>
-        </div>
+        <input type="hidden" id="taxTypeSelect"   value="@ViewBag.DefaultTaxType" />
+        <input type="hidden" id="taxPercentInput" value="@ViewBag.DefaultTaxPercent" />
 
         <table class="table table-sm table-borderless mb-0 ms-auto" style="max-width:320px">
             <tbody>
@@ -235,10 +207,9 @@
                 uom: '@Html.Raw((item.UOM ?? "").Replace("'", "\\'"))',
                 qty: @item.Qty,
                 rate: @item.Rate,
-                discount: @item.Discount,
                 amount: @item.Amount,
                 godownId: @(item.GodownId.HasValue ? item.GodownId.Value.ToString() : "null"),
-                godownName: @(item.GodownName != null ? $"'{Html.Raw(item.GodownName.Replace("'", "\\'"))}'" : "null")
+                godownName: @Html.Raw(item.GodownName != null ? $"'{item.GodownName.Replace("'", "\\'")}'" : "null")
             });
             </text>
         }
@@ -272,7 +243,7 @@
                 success: function(response) {
                     if (response.success) {
                         // Show success popup overlay
-                        showSuccessPopup(response.message, response.redirectUrl);
+                        showSuccessPopup(response.message, response.redirectUrl, @(Model.SaleOrderId > 0 ? "true" : "false"));
                     } else {
                         showToast('danger', response.message || 'Something went wrong. Please check the form.', 'Error');
                         $btn.prop('disabled', false).html(originalHtml);
@@ -307,13 +278,28 @@
                     return; 
                 }
                 data.forEach(p => {
-                    dd.append(`<a href="#" class="list-group-item list-group-item-action small py-2" onclick="selectParty(${p.ledgerId}, '${escHtml(p.ledgerName)}'); return false;">
-                        <div class="fw-semibold">${escHtml(p.ledgerName)}</div>
-                        <div class="text-muted" style="font-size:.75rem">${p.mobileNo || ''} ${p.balance ? '· Bal: ₹' + p.balance.toFixed(2) : ''}</div>
-                    </a>`);
+                    // Built via the DOM API (.attr()/.text()), not a template
+                    // string with the name spliced into an inline onclick —
+                    // a party/item name containing an apostrophe (common:
+                    // "O'Brien", "D'Souza") would break out of the JS string
+                    // literal there and silently kill the click handler.
+                    var $a = $('<a href="#" class="list-group-item list-group-item-action small py-2"></a>')
+                        .attr('data-id', p.ledgerId)
+                        .attr('data-name', p.ledgerName);
+                    $('<div class="fw-semibold"></div>').text(p.ledgerName).appendTo($a);
+                    $('<div class="text-muted" style="font-size:.75rem"></div>')
+                        .text((p.mobileNo || '') + (p.balance ? ' · Bal: ₹' + p.balance.toFixed(2) : ''))
+                        .appendTo($a);
+                    dd.append($a);
                 });
             });
         }, 300);
+    });
+
+    $('#partyDropdown').on('click', 'a', function (e) {
+        e.preventDefault();
+        var $t = $(this);
+        selectParty($t.data('id'), $t.data('name'));
     });
 
     function selectParty(id, name) {
@@ -347,13 +333,27 @@
                     return; 
                 }
                 data.forEach(item => {
-                    dd.append(`<a href="#" class="list-group-item list-group-item-action small py-2" onclick="selectEntryItem(${item.stockItemId}, '${escHtml(item.itemName)}', '${escHtml(item.uom)}', ${item.rate || 0}); return false;">
-                        <div class="fw-semibold">${escHtml(item.itemName)}</div>
-                        <div class="text-muted" style="font-size:.75rem">UOM: ${escHtml(item.uom)} ${item.rate ? '· Rate: ₹' + item.rate.toFixed(2) : ''}</div>
-                    </a>`);
+                    // See the party dropdown above for why this is built via
+                    // the DOM API rather than an inline onclick string.
+                    var $a = $('<a href="#" class="list-group-item list-group-item-action small py-2"></a>')
+                        .attr('data-id', item.stockItemId)
+                        .attr('data-name', item.itemName)
+                        .attr('data-uom', item.uom)
+                        .attr('data-rate', item.rate || 0);
+                    $('<div class="fw-semibold"></div>').text(item.itemName).appendTo($a);
+                    $('<div class="text-muted" style="font-size:.75rem"></div>')
+                        .text('UOM: ' + item.uom + (item.rate ? ' · Rate: ₹' + item.rate.toFixed(2) : ''))
+                        .appendTo($a);
+                    dd.append($a);
                 });
             });
         }, 300);
+    });
+
+    $('#entryItemDropdown').on('click', 'a', function (e) {
+        e.preventDefault();
+        var $t = $(this);
+        selectEntryItem($t.data('id'), $t.data('name'), $t.data('uom'), parseFloat($t.data('rate')) || 0);
     });
 
     function selectEntryItem(id, name, uom, masterRate) {
@@ -372,8 +372,6 @@
             $.get('/SaleOrder/GetItemRate', { stockItemId: id, ledgerId: ledgerId }, function(data) {
                 var r = data.rate || 0;
                 $('#entryRate').val(r > 0 ? r.toFixed(2) : (masterRate > 0 ? masterRate.toFixed(2) : ''));
-                if (data.source === 'customer')
-                    showToast('info', 'Rate fetched from customer\'s last order.', 'Rate');
             }).fail(function() {
                 if (masterRate > 0) $('#entryRate').val(masterRate.toFixed(2));
             });
@@ -399,9 +397,6 @@
         var uom = $('#entryItemUOM').val();
         var qty = parseFloat($('#entryQty').val());
         var rate = parseFloat($('#entryRate').val());
-        var disc = parseFloat($('#entryDisc').val()) || 0;
-        var godownId = $('#entryGodown').val();
-        var godownName = godownId ? $('#entryGodown option:selected').text() : '';
 
         // Validation
         if (!itemId || itemId === '') {
@@ -418,14 +413,8 @@
             $('#entryRate').focus();
             return;
         }
-        if (disc < 0 || disc > 100) {
-            showToast('danger', 'Discount must be between 0 and 100%.', 'Validation Error');
-            $('#entryDisc').focus();
-            return;
-        }
 
-        var amount = qty * rate * (1 - disc / 100);
-        amount = Math.round(amount * 100) / 100;
+        var amount = Math.round(qty * rate * 100) / 100;
 
         var item = {
             stockItemId: parseInt(itemId),
@@ -433,28 +422,25 @@
             uom: uom,
             qty: qty,
             rate: rate,
-            discount: disc,
             amount: amount,
-            godownId: godownId ? parseInt(godownId) : null,
-            godownName: godownId ? godownName : null
+            godownId: null,
+            godownName: null
         };
 
         var editIdx = $('#editingIndex').val();
         if (editIdx !== '') {
             // Update mode
             itemsList[parseInt(editIdx)] = item;
-            showToast('success', 'Item updated successfully.', 'List Updated');
             cancelEditItem();
         } else {
             // Check duplicate items
-            var duplicate = itemsList.find(i => i.stockItemId === item.stockItemId && i.godownId === item.godownId);
+            var duplicate = itemsList.find(i => i.stockItemId === item.stockItemId);
             if (duplicate) {
-                showToast('danger', 'This item is already added with the same Godown. Edit that item instead.', 'Duplicate Item');
+                showToast('danger', 'This item is already added. Edit that item instead.', 'Duplicate Item');
                 return;
             }
             // Add mode
             itemsList.push(item);
-            showToast('success', 'Item added to list.', 'Item Added');
             clearEntryFields();
         }
 
@@ -476,8 +462,6 @@
 
         $('#entryQty').val(item.qty);
         $('#entryRate').val(item.rate);
-        $('#entryDisc').val(item.discount);
-        $('#entryGodown').val(item.godownId || '');
 
         $('#editingIndex').val(idx);
         $('#btnCancelEdit').show();
@@ -499,7 +483,6 @@
             }
 
             renderItemsTable();
-            showToast('warning', 'Item removed from list.', 'Item Removed');
         }
     }
 
@@ -514,8 +497,6 @@
         clearEntryItem();
         $('#entryQty').val('');
         $('#entryRate').val('');
-        $('#entryDisc').val('0');
-        $('#entryGodown').val('');
     }
 
     // Render items table dynamically with hidden input fields
@@ -526,7 +507,7 @@
         var total = 0;
         
         if (itemsList.length === 0) {
-            tbody.append('<tr><td colspan="7" class="text-center text-muted py-3">No items added yet. Please use the entry form above to add items.</td></tr>');
+            tbody.append('<tr><td colspan="6" class="text-center text-muted py-3">No items added yet. Please use the entry form above to add items.</td></tr>');
             mobileContainer.append('<div class="text-center text-muted py-3 bg-light rounded border border-dashed small">No items added yet. Please use the entry form above to add items.</div>');
             $('#grandTotalLabel').text('₹ 0.00');
             $('#grandTotalMobileCard').attr('style', 'display: none !important;');
@@ -548,7 +529,6 @@
                 </td>
                 <td class="text-end">${item.qty.toFixed(3)}</td>
                 <td class="text-end">₹ ${item.rate.toFixed(2)}</td>
-                <td class="text-end">${item.discount.toFixed(2)}%</td>
                 <td class="text-end fw-semibold">₹ ${item.amount.toFixed(2)}</td>
                 <td class="text-center">
                     <button type="button" class="btn btn-sm btn-outline-primary p-1 px-2 me-1" onclick="editItem(${idx})" title="Edit Item">
@@ -589,8 +569,8 @@
                             <div class="fw-bold">${item.qty.toFixed(3)}</div>
                         </div>
                         <div class="col-4 border-end">
-                            <div class="text-muted small mb-1" style="font-size: 0.75rem;">Rate & Disc</div>
-                            <div class="fw-semibold">₹${item.rate.toFixed(2)} ${item.discount > 0 ? `<div class="text-danger small" style="font-size: 0.7rem;">(-${item.discount.toFixed(1)}%)</div>` : ''}</div>
+                            <div class="text-muted small mb-1" style="font-size: 0.75rem;">Rate</div>
+                            <div class="fw-semibold">₹${item.rate.toFixed(2)}</div>
                         </div>
                         <div class="col-4">
                             <div class="text-muted small mb-1" style="font-size: 0.75rem;">Amount</div>
@@ -608,7 +588,6 @@
             <input type="hidden" name="Items[${idx}].UOM" value="${escHtml(item.uom)}" />
             <input type="hidden" name="Items[${idx}].Qty" value="${item.qty}" />
             <input type="hidden" name="Items[${idx}].Rate" value="${item.rate}" />
-            <input type="hidden" name="Items[${idx}].Discount" value="${item.discount}" />
             <input type="hidden" name="Items[${idx}].Amount" value="${item.amount}" />
             <input type="hidden" name="Items[${idx}].GodownId" value="${item.godownId || ''}" />
             <input type="hidden" name="Items[${idx}].GodownName" value="${escHtml(item.godownName || '')}" />`;
@@ -686,13 +665,19 @@
         <text>selectParty(@Model.LedgerId, '@Html.Raw((Model.LedgerName ?? "").Replace("'", "\\'"))');</text>
     }
 
-    // Pre-populate tax fields when editing
-    $('#taxTypeSelect').val('@Model.TaxType');
-    $('#taxPercentInput').val('@Model.TaxPercent');
+    // For edits: override auto-settings with the order's saved tax values
+    @if (Model.SaleOrderId > 0 && Model.TaxType != "None")
+    {
+        <text>
+        $('#taxTypeSelect').val('@Model.TaxType');
+        $('#taxPercentInput').val('@Model.TaxPercent');
+        </text>
+    }
     recalcTotals();
 
     // Success popup with animated overlay and redirect
-    function showSuccessPopup(message, redirectUrl) {
+    function showSuccessPopup(message, redirectUrl, isEdit) {
+        var title = isEdit ? 'Order Updated!' : 'Order Created!';
         // Create overlay
         var overlay = $(`
             <div id="successOverlay" style="
@@ -715,7 +700,7 @@
                     ">
                         <i class="bi bi-check-lg" style="font-size: 40px; color: white;"></i>
                     </div>
-                    <h4 style="color: #333; margin-bottom: 8px; font-weight: 700;">Order Created!</h4>
+                    <h4 style="color: #333; margin-bottom: 8px; font-weight: 700;">${title}</h4>
                     <p style="color: #666; margin-bottom: 20px; font-size: 0.95rem;">${message}</p>
                     <div style="color: #999; font-size: 0.85rem;">
                         <span class="spinner-border spinner-border-sm me-1"></span> Redirecting to Dashboard...

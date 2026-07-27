@@ -1,0 +1,94 @@
+@{ ViewData["Title"] = "User-wise Report"; ViewData["ActivePage"] = "ReportsUserWise"; }
+
+<div class="page-header mb-3">
+    <h5><i class="bi bi-person-lines-fill me-2 text-success"></i>User-wise Sales</h5>
+</div>
+
+<div class="card p-3 mb-3">
+    <div class="row g-2 align-items-end">
+        <div class="col-5 col-md-3">
+            <label class="form-label small mb-1">From</label>
+            <input type="date" id="rptFrom" class="form-control form-control-sm"
+                   value="@(new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1).ToString("yyyy-MM-dd"))" />
+        </div>
+        <div class="col-5 col-md-3">
+            <label class="form-label small mb-1">To</label>
+            <input type="date" id="rptTo" class="form-control form-control-sm"
+                   value="@DateTime.Today.ToString("yyyy-MM-dd")" />
+        </div>
+        <div class="col-2 col-md-1">
+            <button class="btn btn-primary btn-sm w-100" onclick="loadData()">
+                <i class="bi bi-funnel"></i>
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center py-2">
+        <span class="fw-semibold small"><i class="bi bi-person-lines-fill me-1"></i>Sales by User</span>
+        <button class="btn btn-outline-success btn-sm border-0 p-0 px-2" onclick="exportTable('userTable','User_Wise')" title="Export CSV">
+            <i class="bi bi-file-earmark-excel-fill text-success"></i>
+        </button>
+    </div>
+    <div id="tableLoading" class="text-center py-4 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>
+    <div class="table-responsive" id="tableContent" style="display:none">
+        <table class="table table-sm mb-0" id="userTable">
+            <thead class="table-light">
+                <tr><th>User</th><th class="text-center">Orders</th><th class="text-end">Amount</th><th class="text-center">Pending</th><th class="text-center">Synced</th><th class="text-center">Invoiced</th><th class="text-center">Today's Orders</th><th class="text-end">This Month's Sales</th><th class="text-center">Total Orders</th><th>Recent Order</th></tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+        </table>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+$(function() { loadData(); });
+
+function loadData() {
+    var params = { from: $('#rptFrom').val(), to: $('#rptTo').val() };
+    $('#tableLoading').show(); $('#tableContent').hide();
+
+    $.get('/Reports/UserWiseData', params, function(data) {
+        var html = '';
+        if (!data.length) {
+            html = '<tr><td colspan="10" class="text-center text-muted py-3">No data in this period.</td></tr>';
+        } else {
+            data.forEach(function(r) {
+                html += '<tr>' +
+                    '<td class="small fw-semibold">' + esc(r.userName) + '</td>' +
+                    '<td class="text-center small">' + r.count + '</td>' +
+                    '<td class="text-end small fw-semibold">₹' + fmt(r.total) + '</td>' +
+                    '<td class="text-center small">' + r.pending + '</td>' +
+                    '<td class="text-center small">' + r.synced + '</td>' +
+                    '<td class="text-center small">' + r.invoiced + '</td>' +
+                    '<td class="text-center small">' + r.todayCount + '</td>' +
+                    '<td class="text-end small">₹' + fmt(r.monthValue) + '</td>' +
+                    '<td class="text-center small">' + r.totalOrders + '</td>' +
+                    '<td class="small">' + (r.recentOrderNo ? esc(r.recentOrderNo) + ' · ' + esc(r.recentOrderDate) : '—') + '</td>' +
+                    '</tr>';
+            });
+        }
+        $('#tableBody').html(html);
+        $('#tableLoading').hide(); $('#tableContent').show();
+    }).fail(function() {
+        $('#tableLoading').html('<span class="text-danger small">Failed to load.</span>');
+    });
+}
+
+function exportTable(tableId, filename) {
+    var table = document.getElementById(tableId); if (!table) return;
+    var csv = [];
+    table.querySelectorAll('tr').forEach(function(row) {
+        var r = []; row.querySelectorAll('td,th').forEach(function(c) { r.push('"' + c.innerText.trim().replace(/₹/g,'').replace(/"/g,'""') + '"'); });
+        if (r.length) csv.push(r.join(','));
+    });
+    var a = document.createElement('a'); a.href = 'data:text/csv;charset=utf-8,﻿' + encodeURI(csv.join('\n'));
+    a.download = filename + '.csv'; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+function fmt(n) { return (n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function esc(s) { var d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
+</script>
+}

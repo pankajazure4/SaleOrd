@@ -89,7 +89,7 @@
 
         @{
             bool _showMasters = _perms.Contains(SaleOrd.Models.Domain.AppPermissions.MastersParties)
-                             || _perms.Contains(SaleOrd.Models.Domain.AppPermissions.MastersItems);
+                || _perms.Contains(SaleOrd.Models.Domain.AppPermissions.MastersItems);
         }
         @if (_showMasters)
         {
@@ -111,16 +111,56 @@
         }
 
         @{
-            bool _showReports = _perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsSummary)
-                             || _perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsPartyWise)
-                             || _perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsDayWise);
+            bool _showReports = _perms.Any(p => p.StartsWith("Reports."));
+            bool _reportsOpen = activePage != null && activePage.StartsWith("Reports");
         }
         @if (_showReports)
         {
             <div class="sidebar-section">
-                <a href="/Reports" class="sidebar-link @(activePage == "Reports" ? "active" : "")">
-                    <i class="bi bi-bar-chart-line"></i>Reports
+                <a class="sidebar-link d-flex justify-content-between align-items-center"
+                   data-bs-toggle="collapse" href="#reportsCollapse" role="button"
+                   aria-expanded="@(_reportsOpen ? "true" : "false")" aria-controls="reportsCollapse">
+                    <span><i class="bi bi-bar-chart-line"></i>Reports</span>
+                    <i class="bi bi-chevron-down sidebar-chevron"></i>
                 </a>
+                <div class="collapse @(_reportsOpen ? "show" : "")" id="reportsCollapse">
+                    @if (_perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsSummary))
+                    {
+                        <a href="/Reports/Summary" class="sidebar-link sidebar-sub @(activePage == "ReportsSummary" ? "active" : "")">
+                            <i class="bi bi-graph-up"></i>Sales Summary
+                        </a>
+                    }
+                    @if (_perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsPartyWise) && _userRole != SaleOrd.Models.Domain.AppRoles.Salesman)
+                    {
+                        <a href="/Reports/PartyWise" class="sidebar-link sidebar-sub @(activePage == "ReportsPartyWise" ? "active" : "")">
+                            <i class="bi bi-people"></i>Party-wise
+                        </a>
+                    }
+                    @if (_perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsDayWise))
+                    {
+                        <a href="/Reports/DayWise" class="sidebar-link sidebar-sub @(activePage == "ReportsDayWise" ? "active" : "")">
+                            <i class="bi bi-calendar3"></i>Day-wise
+                        </a>
+                    }
+                    @if (_perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsUserWise) && _userRole != SaleOrd.Models.Domain.AppRoles.Salesman)
+                    {
+                        <a href="/Reports/UserWise" class="sidebar-link sidebar-sub @(activePage == "ReportsUserWise" ? "active" : "")">
+                            <i class="bi bi-person-lines-fill"></i>User-wise
+                        </a>
+                    }
+                    @if (_perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsPending))
+                    {
+                        <a href="/Reports/Pending" class="sidebar-link sidebar-sub @(activePage == "ReportsPending" ? "active" : "")">
+                            <i class="bi bi-hourglass-split"></i>Pending Orders
+                        </a>
+                    }
+                    @if (_perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsUserPerf) && _userRole != SaleOrd.Models.Domain.AppRoles.Salesman)
+                    {
+                        <a href="/Reports/UserPerf" class="sidebar-link sidebar-sub @(activePage == "ReportsUserPerf" ? "active" : "")">
+                            <i class="bi bi-award"></i>User Performance
+                        </a>
+                    }
+                </div>
             </div>
         }
 
@@ -171,9 +211,12 @@
         <a href="/Reports" class="bottom-nav-item @(activePage == "Reports" ? "active" : "")">
             <i class="bi bi-bar-chart"></i><span>Reports</span>
         </a>
-        <a href="/Masters/Parties" class="bottom-nav-item @(activePage == "Parties" ? "active" : "")">
-            <i class="bi bi-people"></i><span>Masters</span>
-        </a>
+        @if (_showMasters)
+        {
+            <a href="/Masters/Parties" class="bottom-nav-item @(activePage == "Parties" ? "active" : "")">
+                <i class="bi bi-people"></i><span>Masters</span>
+            </a>
+        }
     </nav>
 }
 else

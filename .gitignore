@@ -12,6 +12,9 @@ node_modules/
 
 publish/
 
+SaleOrd.SyncAgent/installer/payload/
+SaleOrd.SyncAgent/installer/Output/
+
 TestResults/
 
 *.pdb

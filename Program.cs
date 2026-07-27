@@ -45,6 +45,8 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<SaleOrd.Services.ActiveCompanyResolver>();
 builder.Services.AddScoped<SaleOrd.Services.PermissionService>();
 builder.Services.AddScoped<SaleOrd.Services.UserActivityService>();
+builder.Services.AddScoped<SaleOrd.Services.LicenseService>();
+builder.Services.AddSingleton<SaleOrd.Services.SyncCoordinator>();
 builder.Services.AddMemoryCache();
 builder.Services.AddControllersWithViews();
 
@@ -69,6 +71,7 @@ app.UseStaticFiles();
 app.UseRouting();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseMiddleware<SaleOrd.Licensing.LicenseGateMiddleware>();
 
 app.MapControllerRoute(
     name: "default",
@@ -104,7 +107,6 @@ static async Task SeedAsync(IServiceProvider services)
     }
 
     // Seed default AppSettings for edit window
-    var editSettingKeys = new[] { "OrderEditEnabled", "OrderEditCutoffHour", "TaxLedgerIGST", "TaxLedgerCGST", "TaxLedgerSGST" };
     var existingSettingKeys = db.AppSettings.Select(s => s.Key).ToHashSet();
     var defaultSettings = new Dictionary<string, string>
     {
@@ -113,6 +115,10 @@ static async Task SeedAsync(IServiceProvider services)
         ["TaxLedgerIGST"]      = "IGST",
         ["TaxLedgerCGST"]      = "CGST",
         ["TaxLedgerSGST"]      = "SGST",
+        ["DefaultTaxType"]     = "None",
+        ["DefaultTaxPercent"]  = "0",
+        ["SalesLedger"]        = "Sales",
+        ["TaxLedgerRoundOff"]  = "Round Off",
     };
     foreach (var (key, val) in defaultSettings)
     {

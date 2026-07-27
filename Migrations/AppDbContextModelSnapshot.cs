@@ -17,7 +17,7 @@ namespace SaleOrd.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "8.0.27")
+                .HasAnnotation("ProductVersion", "8.0.29")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -341,6 +341,45 @@ namespace SaleOrd.Migrations
                     b.ToTable("Godowns");
                 });
 
+            modelBuilder.Entity("SaleOrd.Models.Domain.LastSaleRate", b =>
+                {
+                    b.Property<int>("LastSaleRateId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("LastSaleRateId"));
+
+                    b.Property<int>("CompanyId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("LastSyncedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("LedgerId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("Rate")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime>("SaleDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("StockItemId")
+                        .HasColumnType("int");
+
+                    b.HasKey("LastSaleRateId");
+
+                    b.HasIndex("LedgerId");
+
+                    b.HasIndex("StockItemId");
+
+                    b.HasIndex("CompanyId", "LedgerId", "StockItemId")
+                        .IsUnique();
+
+                    b.ToTable("LastSaleRates");
+                });
+
             modelBuilder.Entity("SaleOrd.Models.Domain.Ledger", b =>
                 {
                     b.Property<int>("LedgerId")
@@ -367,6 +406,9 @@ namespace SaleOrd.Migrations
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<string>("Email")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("FSSAINo")
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("GSTNo")
@@ -862,6 +904,33 @@ namespace SaleOrd.Migrations
                         .IsRequired();
 
                     b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("SaleOrd.Models.Domain.LastSaleRate", b =>
+                {
+                    b.HasOne("SaleOrd.Models.Domain.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("SaleOrd.Models.Domain.Ledger", "Ledger")
+                        .WithMany()
+                        .HasForeignKey("LedgerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("SaleOrd.Models.Domain.StockItem", "StockItem")
+                        .WithMany()
+                        .HasForeignKey("StockItemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("Ledger");
+
+                    b.Navigation("StockItem");
                 });
 
             modelBuilder.Entity("SaleOrd.Models.Domain.Ledger", b =>

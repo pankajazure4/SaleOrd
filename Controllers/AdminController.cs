@@ -336,7 +336,9 @@ public class AdminController : Controller
         ViewBag.Action   = action;
         ViewBag.From     = from?.ToString("yyyy-MM-dd");
         ViewBag.To       = to?.ToString("yyyy-MM-dd");
-        ViewBag.Users    = await _db.Users.OrderBy(u => u.FullName).Select(u => new { u.Id, u.FullName }).ToListAsync<object>();
+        ViewBag.UserList = await _db.Users.OrderBy(u => u.FullName)
+            .Select(u => new { u.Id, u.FullName })
+            .ToListAsync();
         ViewBag.Actions  = new[] {
             ActivityActions.Login, ActivityActions.Logout,
             ActivityActions.CreateOrder, ActivityActions.EditOrder, ActivityActions.CancelOrder,

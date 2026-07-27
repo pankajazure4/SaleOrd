@@ -1,8 +1,10 @@
+@using SaleOrd.Licensing
 @{
     ViewData["Title"] = "Settings";
     ViewData["ActivePage"] = "Settings";
     var companies = ViewBag.Companies as IEnumerable<SaleOrd.Models.Domain.Company> ?? Enumerable.Empty<SaleOrd.Models.Domain.Company>();
     var selectedCompanyId = (int)(ViewBag.SelectedCompanyId ?? 0);
+    var licenseStatus = ViewBag.LicenseStatus as LicenseValidationResult;
 }
 @Html.AntiForgeryToken()
 
@@ -15,6 +17,41 @@
 
 <div class="row g-3">
     <div class="col-lg-7">
+
+        <div class="card mb-3">
+            <div class="card-header">
+                <i class="bi bi-key-fill me-2 text-primary"></i>License
+            </div>
+            <div class="p-3">
+                <div class="d-flex align-items-center gap-2 mb-2">
+                    <span id="licenseStatusBadge" class="badge bg-@(licenseStatus?.IsValid == true ? "success" : "danger")">
+                        @(licenseStatus?.IsValid == true ? (licenseStatus.IsTrial ? "Trial" : "Active") : "Not Licensed")
+                    </span>
+                    @if (licenseStatus?.ExpiresOn != null)
+                    {
+                        <span class="small text-muted">Expires @licenseStatus.ExpiresOn.Value.ToString("dd-MMM-yyyy")</span>
+                    }
+                </div>
+                <div id="licenseStatusMessage" class="small text-muted mb-3">@licenseStatus?.Message</div>
+
+                <label class="form-label">License Key</label>
+                <div class="input-group mb-2">
+                    <span class="input-group-text"><i class="bi bi-shield-lock"></i></span>
+                    <input type="text" id="licenseKey" class="form-control"
+                           placeholder="@(string.IsNullOrEmpty((string)ViewBag.LicenseMaskedKey) ? "Paste license key..." : ViewBag.LicenseMaskedKey)" />
+                </div>
+                <div class="d-flex gap-2 flex-wrap">
+                    <button id="btnActivateLicense" class="btn btn-primary btn-sm" type="button" onclick="saveLicense()"
+                            style="@(ViewBag.LicenseHasKey == true ? "display:none" : "")">
+                        <i class="bi bi-floppy me-1"></i>Activate / Save
+                    </button>
+                    <button id="btnCheckLicense" class="btn btn-outline-primary btn-sm" type="button" onclick="checkLicense()"
+                            @(ViewBag.LicenseHasKey == true ? "" : "disabled")>
+                        <i class="bi bi-arrow-clockwise me-1"></i>Check Now
+                    </button>
+                </div>
+            </div>
+        </div>
 
         <div class="card mb-3">
             <div class="card-header">
@@ -39,9 +76,6 @@
                     <button class="btn btn-outline-primary btn-sm" type="button" onclick="checkStatus()">
                         <i class="bi bi-wifi me-1"></i>Check Status
                     </button>
-                    <a href="/Settings/RawXml" target="_blank" class="btn btn-outline-secondary btn-sm" title="View raw Tally XML response - useful for debugging">
-                        <i class="bi bi-code-slash me-1"></i>Raw XML
-                    </a>
                 </div>
                 <div id="openCompanyInfo" class="mt-2 small fw-semibold" style="display:none"></div>
             </div>
@@ -69,6 +103,132 @@
                 <button class="btn btn-outline-danger btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#flushModal" @(companies.Any() ? "" : "disabled")>
                     <i class="bi bi-trash3 me-1"></i>Delete Data
                 </button>
+            </div>
+        </div>
+
+        <!-- Tax Settings -->
+        <div class="card mt-3">
+            <div class="card-header fw-semibold py-2">
+                <i class="bi bi-percent me-2 text-primary"></i>Tax Settings
+            </div>
+            <div class="card-body">
+                @if (TempData["Success"] != null)
+                {
+                    <div class="alert alert-success py-2 small mb-3">@TempData["Success"]</div>
+                }
+                <form method="post" asp-action="SaveTaxSettings">
+                    @Html.AntiForgeryToken()
+                    <div class="row g-2">
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Default Tax Type</label>
+                            <select name="defaultTaxType" class="form-select form-select-sm">
+                                @foreach (var opt in new[] { ("None","No Tax"), ("IGST","IGST"), ("CGST_SGST","CGST + SGST") })
+                                {
+                                    if ((string)ViewBag.DefaultTaxType == opt.Item1)
+                                    {
+                                        <option value="@opt.Item1" selected>@opt.Item2</option>
+                                    }
+                                    else
+                                    {
+                                        <option value="@opt.Item1">@opt.Item2</option>
+                                    }
+                                }
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Default Tax %</label>
+                            <input type="number" name="defaultTaxPercent" class="form-control form-control-sm text-end"
+                                   min="0" max="100" step="0.01" value="@ViewBag.DefaultTaxPercent" />
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Sales Ledger Name</label>
+                            <input type="text" name="salesLedger" class="form-control form-control-sm"
+                                   value="@ViewBag.SalesLedger" placeholder="Sales" />
+                            <div class="text-muted" style="font-size:11px">Sales account in voucher (e.g. GST SALES)</div>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Round Off Ledger Name</label>
+                            <input type="text" name="taxLedgerRoundOff" class="form-control form-control-sm"
+                                   value="@ViewBag.TaxLedgerRoundOff" placeholder="Round Off" />
+                            <div class="text-muted" style="font-size:11px">Rounding adjustment ledger (e.g. Rounding Off)</div>
+                        </div>
+                        <div class="col-4">
+                            <label class="form-label small fw-semibold">IGST Ledger Name</label>
+                            <input type="text" name="taxLedgerIGST" class="form-control form-control-sm"
+                                   value="@ViewBag.TaxLedgerIGST" placeholder="IGST" />
+                        </div>
+                        <div class="col-4">
+                            <label class="form-label small fw-semibold">CGST Ledger Name</label>
+                            <input type="text" name="taxLedgerCGST" class="form-control form-control-sm"
+                                   value="@ViewBag.TaxLedgerCGST" placeholder="CGST" />
+                        </div>
+                        <div class="col-4">
+                            <label class="form-label small fw-semibold">SGST Ledger Name</label>
+                            <input type="text" name="taxLedgerSGST" class="form-control form-control-sm"
+                                   value="@ViewBag.TaxLedgerSGST" placeholder="SGST" />
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm mt-3">
+                        <i class="bi bi-save me-1"></i>Save Tax Settings
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Order Defaults -->
+        <div class="card mt-3">
+            <div class="card-header fw-semibold py-2">
+                <i class="bi bi-box-seam me-2 text-primary"></i>Order Defaults
+            </div>
+            <div class="card-body">
+                <form method="post" asp-action="SaveOrderDefaults">
+                    @Html.AntiForgeryToken()
+                    <div class="row g-2">
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Default Voucher Type</label>
+                            <input type="text" name="defaultVoucherType" class="form-control form-control-sm"
+                                   value="@ViewBag.DefaultVoucherType" placeholder="Sales Order" />
+                            <div class="text-muted" style="font-size:11px">Voucher type used when pushing orders to Tally</div>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Default Godown</label>
+                            <select name="defaultGodownName" class="form-select form-select-sm">
+                                <option value="">None</option>
+                                @foreach (var g in (IEnumerable<SaleOrd.Models.Domain.Godown>)ViewBag.Godowns)
+                                {
+                                    if ((string)ViewBag.DefaultGodownName == g.GodownName)
+                                    {
+                                        <option value="@g.GodownName" selected>@g.GodownName</option>
+                                    }
+                                    else
+                                    {
+                                        <option value="@g.GodownName">@g.GodownName</option>
+                                    }
+                                }
+                            </select>
+                            <div class="text-muted" style="font-size:11px">Applied automatically to every item — no per-item Godown picker in the order form</div>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Default Batch</label>
+                            <input type="text" name="defaultBatchName" class="form-control form-control-sm"
+                                   value="@ViewBag.DefaultBatchName" placeholder="Primary Batch" />
+                            <div class="text-muted" style="font-size:11px">Batch name used in the Tally push wherever batch allocation applies</div>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label small fw-semibold">Tally FSSAI UDF Field</label>
+                            <input type="text" name="tallyFssaiUdfField" class="form-control form-control-sm"
+                                   value="@ViewBag.TallyFssaiUdfField" placeholder="e.g. _UDF_788534681 (leave blank to skip)" />
+                            <div class="text-muted" style="font-size:11px">
+                                Only if your Tally has a custom User Defined Field for Food License No. — check a ledger export
+                                in Tally for a tag like <code>UDF:_UDF_788534681</code> and paste the <code>_UDF_...</code> part here.
+                                Left blank, FSSAI No. is saved here but not sent to Tally (no error either way).
+                            </div>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm mt-3">
+                        <i class="bi bi-save me-1"></i>Save Order Defaults
+                    </button>
+                </form>
             </div>
         </div>
 
@@ -120,6 +280,47 @@ $('#flushCompanyIdInput').val('@selectedCompanyId');
 
 $('#flushCompanyId').on('change', function () {
     $('#flushCompanyIdInput').val($(this).val());
+});
+
+function saveLicense() {
+    var key = $('#licenseKey').val().trim();
+    if (!key) {
+        showToast('danger', 'Enter a license key.', 'Error');
+        return;
+    }
+    $.post('/Settings/SaveLicense', { licenseKey: key, __RequestVerificationToken: csrf }, function(r) {
+        showToast(r.success ? 'success' : 'danger', r.message, r.success ? 'Activated' : 'Error');
+        // A key is now saved regardless of whether the portal accepted it —
+        // Check Now becomes the way to re-validate; Save only reappears if
+        // the admin types a different key (see #licenseKey input handler).
+        $('#btnActivateLicense').hide();
+        $('#btnCheckLicense').prop('disabled', false);
+        if (r.success) {
+            $('#licenseStatusBadge').removeClass('bg-danger').addClass('bg-success').text(r.isTrial ? 'Trial' : 'Active');
+        } else {
+            $('#licenseStatusBadge').removeClass('bg-success').addClass('bg-danger').text('Not Licensed');
+        }
+        $('#licenseKey').val('').attr('placeholder', r.maskedKey);
+        $('#licenseStatusMessage').text(r.message);
+    }).fail(function() {
+        showToast('danger', 'Request failed', 'Error');
+    });
+}
+
+function checkLicense() {
+    $.post('/Settings/CheckLicense', { __RequestVerificationToken: csrf }, function(r) {
+        showToast(r.success ? 'success' : 'danger', r.message, r.success ? 'Valid' : 'Invalid');
+        $('#licenseStatusBadge').toggleClass('bg-success', r.success).toggleClass('bg-danger', !r.success)
+            .text(r.success ? (r.isTrial ? 'Trial' : 'Active') : 'Not Licensed');
+        $('#licenseStatusMessage').text(r.message);
+    }).fail(function() {
+        showToast('danger', 'Request failed', 'Error');
+    });
+}
+
+// Typing a new key signals intent to change it — bring the Save button back.
+$('#licenseKey').on('input', function () {
+    if ($(this).val().trim().length > 0) $('#btnActivateLicense').show();
 });
 
 function saveTallyUrl() {

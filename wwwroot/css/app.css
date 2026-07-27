@@ -74,6 +74,9 @@ a { color: var(--primary); }
 .sidebar-link.active { background: var(--primary-soft); color: var(--primary); border-left-color: var(--primary); font-weight: 600; }
 .sidebar-section { padding: 0; }
 .sidebar-label { font-size: 11px; color: var(--text-muted); font-weight: 600; padding: 12px 20px 4px; text-transform: none; }
+.sidebar-sub { padding-left: 36px !important; font-size: 13px; }
+.sidebar-chevron { font-size: 11px; transition: transform 0.2s; }
+.sidebar-link[aria-expanded="true"] .sidebar-chevron { transform: rotate(180deg); }
 
 /* ── Page header ───────────────────────────────────── */
 .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; flex-wrap: wrap; gap: 8px; }

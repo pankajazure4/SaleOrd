@@ -1,0 +1,256 @@
+@model SaleOrd.Models.Domain.SaleOrder
+@{ Layout = null; }
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Sale Order @Model.OrderNo</title>
+<style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; font-size: 12px; color: #111; background: #fff; }
+    .page { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 12mm 14mm; }
+    .header { border-bottom: 2px solid #333; padding-bottom: 8px; margin-bottom: 12px; }
+    .company-name { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; }
+    .doc-title { font-size: 15px; font-weight: 700; text-align: center; text-transform: uppercase;
+                 letter-spacing: 2px; margin: 10px 0 14px; color: #333; border: 1px solid #ccc;
+                 padding: 4px; }
+    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 24px; margin-bottom: 12px; }
+    .meta-row { display: flex; gap: 6px; padding: 2px 0; }
+    .meta-label { color: #666; min-width: 90px; font-size: 11px; }
+    .meta-value { font-weight: 600; }
+    .party-box { border: 1px solid #ccc; padding: 8px 10px; border-radius: 4px; margin-bottom: 12px; }
+    .party-box .lbl { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+    .party-name { font-size: 14px; font-weight: 700; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 0; }
+    th { background: #f5f5f5; font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px;
+         padding: 6px 8px; border: 1px solid #ddd; }
+    td { padding: 6px 8px; border: 1px solid #ddd; font-size: 12px; }
+    .text-right { text-align: right; }
+    .text-center { text-align: center; }
+    .tfoot-row td { background: #f9f9f9; font-weight: 600; }
+    .grand-row td { background: #333; color: #fff; font-weight: 700; font-size: 13px; }
+    .footer { margin-top: 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .sign-box { border-top: 1px solid #333; padding-top: 4px; font-size: 11px; color: #666; margin-top: 40px; }
+    .badge-status { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px;
+                    font-weight: 700; text-transform: uppercase; }
+    .badge-pending  { background: #fff3cd; color: #856404; }
+    .badge-synced   { background: #d1e7dd; color: #0f5132; }
+    .badge-invoiced { background: #cfe2ff; color: #084298; }
+    .narration-box  { border: 1px solid #eee; background: #fafafa; padding: 6px 10px; margin-bottom: 12px;
+                      border-radius: 4px; font-size: 11px; color: #555; }
+    @@media print {
+        body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .no-print { display: none !important; }
+        .page { padding: 8mm 10mm; }
+    }
+</style>
+</head>
+<body>
+<div class="page">
+
+    <!-- Print button (hidden on print) -->
+    <div class="no-print" style="text-align:right;margin-bottom:8px">
+        <button onclick="window.print()" style="padding:6px 18px;background:#333;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px">
+            🖨 Print
+        </button>
+        <button onclick="window.close()" style="padding:6px 14px;background:#eee;color:#333;border:none;border-radius:4px;cursor:pointer;font-size:13px;margin-left:6px">
+            ✕ Close
+        </button>
+    </div>
+
+    <!-- Header -->
+    <div class="header">
+        <div class="company-name">@(Model.Company?.CompanyName ?? "Company")</div>
+    </div>
+
+    <div class="doc-title">Sale Order</div>
+
+    <!-- Meta info + party -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="party-box">
+            <div class="lbl">Bill To</div>
+            <div class="party-name">@Model.LedgerName</div>
+        </div>
+        <div>
+            <div class="meta-grid">
+                <div class="meta-row">
+                    <span class="meta-label">Order No</span>
+                    <span class="meta-value">@Model.OrderNo</span>
+                </div>
+                <div class="meta-row">
+                    <span class="meta-label">Order Date</span>
+                    <span class="meta-value">@Model.OrderDate.ToString("dd-MMM-yyyy")</span>
+                </div>
+                @if (Model.DeliveryDate.HasValue)
+                {
+                    <div class="meta-row">
+                        <span class="meta-label">Delivery Date</span>
+                        <span class="meta-value">@Model.DeliveryDate.Value.ToString("dd-MMM-yyyy")</span>
+                    </div>
+                }
+                <div class="meta-row">
+                    <span class="meta-label">Status</span>
+                    <span class="meta-value">
+                        @if (Model.IsInvoiced)
+                        {
+                            <span class="badge-status badge-invoiced">Invoiced</span>
+                        }
+                        else if (Model.Status == SaleOrd.Models.Domain.OrderStatus.Synced)
+                        {
+                            <span class="badge-status badge-synced">Synced</span>
+                        }
+                        else
+                        {
+                            <span class="badge-status badge-pending">@Model.Status</span>
+                        }
+                    </span>
+                </div>
+                @if (Model.IsInvoiced && !string.IsNullOrEmpty(Model.TallyInvoiceNo))
+                {
+                    <div class="meta-row">
+                        <span class="meta-label">Invoice No</span>
+                        <span class="meta-value">@Model.TallyInvoiceNo</span>
+                    </div>
+                }
+                <div class="meta-row">
+                    <span class="meta-label">Created By</span>
+                    <span class="meta-value">@Model.CreatedByName</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(Model.Narration))
+    {
+        <div class="narration-box"><strong>Note:</strong> @Model.Narration</div>
+    }
+
+    <!-- Items table -->
+    <table>
+        <thead>
+            <tr>
+                <th class="text-center" style="width:32px">#</th>
+                <th>Item Description</th>
+                <th class="text-center" style="width:60px">UOM</th>
+                <th class="text-right" style="width:70px">Qty</th>
+                <th class="text-right" style="width:75px">Rate</th>
+                <th class="text-right" style="width:55px">Disc%</th>
+                <th class="text-right" style="width:85px">Amount</th>
+            </tr>
+        </thead>
+        <tbody>
+            @{ int sr = 0; }
+            @foreach (var item in Model.Items)
+            {
+                sr++;
+                <tr>
+                    <td class="text-center">@sr</td>
+                    <td>
+                        @item.ItemName
+                        @if (!string.IsNullOrEmpty(item.GodownName))
+                        {
+                            <br /><small style="color:#888">@item.GodownName</small>
+                        }
+                    </td>
+                    <td class="text-center">@item.UOM</td>
+                    <td class="text-right">@item.Qty.ToString("N3")</td>
+                    <td class="text-right">@item.Rate.ToString("N2")</td>
+                    <td class="text-right">@(item.Discount > 0 ? item.Discount.ToString("N2") + "%" : "—")</td>
+                    <td class="text-right">@item.Amount.ToString("N2")</td>
+                </tr>
+            }
+            @{ int blankRows = Math.Max(0, 8 - Model.Items.Count); }
+            @for (int i = 0; i < blankRows; i++)
+            {
+                <tr><td colspan="7" style="height:22px">&nbsp;</td></tr>
+            }
+        </tbody>
+        <tfoot>
+            <tr class="tfoot-row">
+                <td colspan="6" class="text-right">Sub Total</td>
+                <td class="text-right">@Model.TotalAmount.ToString("N2")</td>
+            </tr>
+            @if (Model.TaxType != "None" && Model.TaxTotal > 0)
+            {
+                @if (Model.IGSTTotal > 0)
+                {
+                    <tr class="tfoot-row">
+                        <td colspan="6" class="text-right">IGST (@Model.TaxPercent%)</td>
+                        <td class="text-right">@Model.IGSTTotal.ToString("N2")</td>
+                    </tr>
+                }
+                @if (Model.CGSTTotal > 0)
+                {
+                    <tr class="tfoot-row">
+                        <td colspan="6" class="text-right">CGST (@(Model.TaxPercent/2)%)</td>
+                        <td class="text-right">@Model.CGSTTotal.ToString("N2")</td>
+                    </tr>
+                }
+                @if (Model.SGSTTotal > 0)
+                {
+                    <tr class="tfoot-row">
+                        <td colspan="6" class="text-right">SGST (@(Model.TaxPercent/2)%)</td>
+                        <td class="text-right">@Model.SGSTTotal.ToString("N2")</td>
+                    </tr>
+                }
+                @if (Model.RoundOff != 0)
+                {
+                    <tr class="tfoot-row">
+                        <td colspan="6" class="text-right">Round Off</td>
+                        <td class="text-right">@Model.RoundOff.ToString("N2")</td>
+                    </tr>
+                }
+            }
+            <tr class="grand-row">
+                <td colspan="6" class="text-right">Grand Total</td>
+                <td class="text-right">₹ @((Model.GrandTotal > 0 ? Model.GrandTotal : Model.TotalAmount).ToString("N2"))</td>
+            </tr>
+        </tfoot>
+    </table>
+
+    <!-- Footer / signatures -->
+    <div class="footer">
+        <div>
+            <div style="font-size:11px;color:#666;margin-bottom:4px">Amount in Words:</div>
+            <div style="font-weight:600">@AmountInWords(Model.GrandTotal > 0 ? Model.GrandTotal : Model.TotalAmount)</div>
+        </div>
+        <div style="text-align:right">
+            <div class="sign-box" style="text-align:center">Authorised Signature</div>
+        </div>
+    </div>
+
+    <div style="margin-top:16px;font-size:10px;color:#aaa;text-align:center">
+        Printed on @DateTime.Now.ToString("dd-MMM-yyyy hh:mm tt") &nbsp;|&nbsp; @Model.OrderNo
+    </div>
+</div>
+
+@functions {
+    static string AmountInWords(decimal amount)
+    {
+        long whole = (long)Math.Floor(amount);
+        int paise  = (int)Math.Round((amount - whole) * 100);
+        string result = NumberToWords(whole) + " Rupees";
+        if (paise > 0) result += " and " + NumberToWords(paise) + " Paise";
+        return result + " Only";
+    }
+
+    static string NumberToWords(long n)
+    {
+        if (n == 0) return "Zero";
+        if (n < 0)  return "Minus " + NumberToWords(-n);
+        string[] ones = {"","One","Two","Three","Four","Five","Six","Seven","Eight","Nine",
+                         "Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen",
+                         "Seventeen","Eighteen","Nineteen"};
+        string[] tens = {"","","Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"};
+        string w = "";
+        if (n >= 10000000) { w += NumberToWords(n / 10000000) + " Crore "; n %= 10000000; }
+        if (n >= 100000)   { w += NumberToWords(n / 100000)   + " Lakh ";  n %= 100000;   }
+        if (n >= 1000)     { w += NumberToWords(n / 1000)     + " Thousand "; n %= 1000;  }
+        if (n >= 100)      { w += ones[n / 100] + " Hundred "; n %= 100; }
+        if (n >= 20)       { w += tens[n / 10]; n %= 10; if (n > 0) w += "-"; }
+        if (n > 0)         w += ones[n];
+        return w.Trim();
+    }
+}
+</body>
+</html>

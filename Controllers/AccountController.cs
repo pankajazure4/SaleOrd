@@ -15,14 +15,29 @@ public class AccountController : Controller
     private readonly UserManager<AppUser> _userManager;
     private readonly AppDbContext _db;
     private readonly UserActivityService _activity;
+    private readonly LicenseService _license;
 
     public AccountController(SignInManager<AppUser> signIn, UserManager<AppUser> userManager,
-        AppDbContext db, UserActivityService activity)
+        AppDbContext db, UserActivityService activity, LicenseService license)
     {
         _signIn = signIn;
         _userManager = userManager;
         _db = db;
         _activity = activity;
+        _license = license;
+    }
+
+    [HttpGet, Authorize]
+    public async Task<IActionResult> LicenseRequired()
+    {
+        var result = await _license.CheckAsync();
+        if (result.IsValid) return RedirectToAction("Index", "Dashboard");
+
+        var user = await _userManager.GetUserAsync(User);
+        ViewBag.IsAdmin = user?.Role == AppRoles.Admin;
+        ViewBag.Message = result.Message;
+        ViewBag.MachineId = LicenseService.GetMachineId();
+        return View();
     }
 
     [HttpGet]

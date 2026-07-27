@@ -18,6 +18,7 @@ public class Ledger
     public string? TaxType { get; set; }
     public string? IncomeTaxNo { get; set; }
     public string? VATTINNo { get; set; }
+    public string? FSSAINo { get; set; }          // Food License No. — local only, no Tally equivalent
 
     // Financial
     public decimal CreditLimit { get; set; }

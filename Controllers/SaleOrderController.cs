@@ -103,6 +103,43 @@ public class SaleOrderController : Controller
     }
 
     [HttpGet]
+    public async Task<IActionResult> OrdersSearch(string? q, string? status)
+    {
+        var (companyId, user) = await _resolver.ResolveAsync();
+        if (user == null) return Unauthorized();
+        if (!await _permSvc.HasAsync(user.Role, AppPermissions.SaleOrderView)) return Forbid();
+
+        var query = _db.SaleOrders.Where(o => o.CompanyId == companyId);
+
+        if (user.Role == AppRoles.Salesman)
+            query = query.Where(o => o.CreatedById == user.Id);
+
+        if (!string.IsNullOrEmpty(status) && Enum.TryParse<OrderStatus>(status, out var s))
+            query = query.Where(o => o.Status == s);
+
+        if (!string.IsNullOrWhiteSpace(q))
+        {
+            var ql = q.Trim().ToLower();
+            query = query.Where(o => o.OrderNo.ToLower().Contains(ql) || o.LedgerName.ToLower().Contains(ql));
+        }
+
+        var orders = await query
+            .OrderByDescending(o => o.CreatedAt)
+            .Take(50)
+            .Select(o => new
+            {
+                o.SaleOrderId, o.OrderNo, o.LedgerName,
+                orderDate = o.OrderDate.ToString("dd MMM yyyy"),
+                o.TotalAmount,
+                status = o.Status.ToString(),
+                o.SyncError
+            })
+            .ToListAsync();
+
+        return Json(orders);
+    }
+
+    [HttpGet]
     public async Task<IActionResult> Create()
     {
         var (companyId, user) = await _resolver.ResolveAsync();
@@ -112,6 +149,7 @@ public class SaleOrderController : Controller
             return Forbid();
 
         await LoadDropdownsAsync(companyId);
+        await LoadTaxSettingsAsync();
         return View(new SaleOrderCreateVM { OrderDate = DateTime.Today });
     }
 
@@ -187,6 +225,8 @@ public class SaleOrderController : Controller
         // Calculate IGST / CGST+SGST split
         ApplyTaxSplit(order);
 
+        var defaultGodown = await GetDefaultGodownAsync(companyId);
+
         foreach (var item in model.Items.Where(i => i.Qty > 0))
         {
             var stockItem = await _db.StockItems.FindAsync(item.StockItemId);
@@ -202,10 +242,8 @@ public class SaleOrderController : Controller
                 Rate        = item.Rate,
                 Discount    = item.Discount,
                 Amount      = Math.Round(amount, 2),
-                GodownId    = item.GodownId,
-                GodownName  = item.GodownId.HasValue
-                    ? (await _db.Godowns.FindAsync(item.GodownId.Value))?.GodownName
-                    : null
+                GodownId    = defaultGodown?.GodownId,
+                GodownName  = defaultGodown?.GodownName
             });
         }
 
@@ -259,6 +297,10 @@ public class SaleOrderController : Controller
 
         order.Status = OrderStatus.Draft;
         await _db.SaveChangesAsync();
+
+        await _activity.LogAsync(user.Id, user.FullName, user.Role, ActivityActions.CancelOrder,
+            "SaleOrder", order.SaleOrderId, $"Cancelled {order.OrderNo}", companyId);
+
         TempData["Success"] = "Order cancelled.";
         return RedirectToAction("Index");
     }
@@ -281,6 +323,10 @@ public class SaleOrderController : Controller
         order.Status = OrderStatus.Pending;
         order.SyncError = null;
         await _db.SaveChangesAsync();
+
+        await _activity.LogAsync(user.Id, user.FullName, user.Role, ActivityActions.ResubmitOrder,
+            "SaleOrder", order.SaleOrderId, $"Resubmitted {order.OrderNo}", companyId);
+
         TempData["Success"] = "Order resubmitted for sync.";
         return RedirectToAction("Details", new { id });
     }
@@ -324,6 +370,7 @@ public class SaleOrderController : Controller
         }
 
         await LoadDropdownsAsync(companyId);
+        await LoadTaxSettingsAsync();
 
         var model = new SaleOrderCreateVM
         {
@@ -359,19 +406,35 @@ public class SaleOrderController : Controller
     public async Task<IActionResult> Edit(int id, SaleOrderCreateVM model)
     {
         var (companyId, user) = await _resolver.ResolveAsync();
-        if (user == null) return RedirectToAction("Login", "Account");
+        bool isAjax = Request.Headers["X-Requested-With"] == "XMLHttpRequest";
+
+        if (user == null)
+        {
+            if (isAjax) return Json(new { success = false, message = "Session expired. Please login again." });
+            return RedirectToAction("Login", "Account");
+        }
 
         if (!await _permSvc.HasAsync(user.Role, AppPermissions.SaleOrderEdit))
+        {
+            if (isAjax) return Json(new { success = false, message = "Access denied." });
             return Forbid();
+        }
 
         var order = await _db.SaleOrders
             .Include(o => o.Items)
             .FirstOrDefaultAsync(o => o.SaleOrderId == id && o.CompanyId == companyId);
 
-        if (order == null) return NotFound();
+        if (order == null)
+        {
+            if (isAjax) return Json(new { success = false, message = "Order not found." });
+            return NotFound();
+        }
 
         if (user.Role == AppRoles.Salesman && order.CreatedById != user.Id)
+        {
+            if (isAjax) return Json(new { success = false, message = "Access denied." });
             return Forbid();
+        }
 
         if (order.IsInvoiced)
             ModelState.AddModelError("", $"Order {order.OrderNo} is invoiced in Tally and cannot be edited.");
@@ -388,6 +451,11 @@ public class SaleOrderController : Controller
 
         if (!ModelState.IsValid)
         {
+            if (isAjax)
+            {
+                var errors = ModelState.Values.SelectMany(v => v.Errors).Select(e => e.ErrorMessage).ToList();
+                return Json(new { success = false, message = string.Join(" ", errors) });
+            }
             await LoadDropdownsAsync(companyId);
             model.SaleOrderId = id;
             return View("Create", model);
@@ -396,6 +464,7 @@ public class SaleOrderController : Controller
         var ledger = await _db.Ledgers.FindAsync(model.LedgerId);
         if (ledger == null)
         {
+            if (isAjax) return Json(new { success = false, message = "Invalid party selected." });
             ModelState.AddModelError("LedgerId", "Invalid party selected.");
             await LoadDropdownsAsync(companyId);
             model.SaleOrderId = id;
@@ -421,6 +490,8 @@ public class SaleOrderController : Controller
         _db.SaleOrderItems.RemoveRange(order.Items);
         order.Items.Clear();
 
+        var defaultGodown = await GetDefaultGodownAsync(companyId);
+
         foreach (var item in model.Items.Where(i => i.Qty > 0))
         {
             var stockItem = await _db.StockItems.FindAsync(item.StockItemId);
@@ -436,10 +507,8 @@ public class SaleOrderController : Controller
                 Rate        = item.Rate,
                 Discount    = item.Discount,
                 Amount      = Math.Round(amount, 2),
-                GodownId    = item.GodownId,
-                GodownName  = item.GodownId.HasValue
-                    ? (await _db.Godowns.FindAsync(item.GodownId.Value))?.GodownName
-                    : null
+                GodownId    = defaultGodown?.GodownId,
+                GodownName  = defaultGodown?.GodownName
             });
         }
 
@@ -450,6 +519,9 @@ public class SaleOrderController : Controller
 
         await _activity.LogAsync(user.Id, user.FullName, user.Role, ActivityActions.EditOrder,
             "SaleOrder", order.SaleOrderId, $"Edited {order.OrderNo}", companyId);
+
+        if (isAjax)
+            return Json(new { success = true, message = $"Sale Order {order.OrderNo} updated successfully!", redirectUrl = "/SaleOrder" });
 
         TempData["Success"] = $"Sale Order {order.OrderNo} updated successfully!";
         return RedirectToAction("Index");
@@ -484,6 +556,28 @@ public class SaleOrderController : Controller
         return RedirectToAction("Index");
     }
 
+    [HttpGet]
+    public async Task<IActionResult> Print(int id)
+    {
+        var (companyId, user) = await _resolver.ResolveAsync();
+        if (user == null) return RedirectToAction("Login", "Account");
+
+        var order = await _db.SaleOrders
+            .Include(o => o.Items)
+            .Include(o => o.Company)
+            .FirstOrDefaultAsync(o => o.SaleOrderId == id && o.CompanyId == companyId);
+
+        if (order == null) return NotFound();
+
+        if (user.Role == AppRoles.Salesman && order.CreatedById != user.Id)
+            return Forbid();
+
+        await _activity.LogAsync(user.Id, user.FullName, user.Role, ActivityActions.PrintOrder,
+            "SaleOrder", order.SaleOrderId, $"Printed {order.OrderNo}", companyId);
+
+        return View(order);
+    }
+
     // Returns customer-wise last rate for an item, falls back to item master rate
     [HttpGet]
     public async Task<IActionResult> GetItemRate(int stockItemId, int ledgerId)
@@ -491,7 +585,20 @@ public class SaleOrderController : Controller
         var (companyId, user) = await _resolver.ResolveAsync();
         if (user == null) return Unauthorized();
 
-        // Last rate from customer's previous orders
+        // Customer+Item last sale rate, pulled from Tally's actual Sales
+        // vouchers at master-sync time — the authoritative source per the
+        // client's requirement. Only falls through when Tally has never
+        // recorded a sale for this exact party+item combination.
+        var tallyRate = await _db.LastSaleRates
+            .Where(r => r.StockItemId == stockItemId && r.LedgerId == ledgerId && r.CompanyId == companyId)
+            .Select(r => (decimal?)r.Rate)
+            .FirstOrDefaultAsync();
+
+        if (tallyRate.HasValue)
+            return Json(new { rate = tallyRate.Value, source = "tally" });
+
+        // Fall back to this customer's last rate from orders placed in-app
+        // (covers a new SO rate before the next Tally sync pulls it back).
         var lastRate = await _db.SaleOrderItems
             .Where(i => i.StockItemId == stockItemId && i.SaleOrder!.LedgerId == ledgerId
                         && i.SaleOrder.CompanyId == companyId && i.Rate > 0)
@@ -555,6 +662,20 @@ public class SaleOrderController : Controller
             .ToListAsync();
     }
 
+    // Every item gets this Godown automatically — there's no per-item picker
+    // in the order form anymore (see Settings > Order Defaults).
+    private async Task<Godown?> GetDefaultGodownAsync(int companyId)
+    {
+        var name = await _db.AppSettings
+            .Where(s => s.Key == "DefaultGodownName")
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync();
+
+        if (string.IsNullOrWhiteSpace(name)) return null;
+
+        return await _db.Godowns.FirstOrDefaultAsync(g => g.CompanyId == companyId && g.GodownName == name);
+    }
+
     private async Task<string> GenerateOrderNoAsync(int companyId)
     {
         var prefix = $"SO-{DateTime.Today:yyyyMMdd}-";
@@ -572,6 +693,14 @@ public class SaleOrderController : Controller
         }
 
         return $"{prefix}{seq:D3}";
+    }
+
+    private async Task LoadTaxSettingsAsync()
+    {
+        var taxType    = (await _db.AppSettings.FirstOrDefaultAsync(s => s.Key == "DefaultTaxType"))?.Value ?? "None";
+        var taxPercent = (await _db.AppSettings.FirstOrDefaultAsync(s => s.Key == "DefaultTaxPercent"))?.Value ?? "0";
+        ViewBag.DefaultTaxType    = taxType;
+        ViewBag.DefaultTaxPercent = decimal.TryParse(taxPercent, out var p) ? p : 0;
     }
 
     private async Task<DateTime?> CalcEditDeadlineAsync(DateTime createdAt)

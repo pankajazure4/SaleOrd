@@ -10,21 +10,43 @@ public class MasterSyncJob : BackgroundService
     private readonly IServiceProvider _services;
     private readonly ILogger<MasterSyncJob> _logger;
     private readonly IConfiguration _config;
+    private readonly SyncCoordinator _coordinator;
 
-    public MasterSyncJob(IServiceProvider services, ILogger<MasterSyncJob> logger, IConfiguration config)
+    public MasterSyncJob(IServiceProvider services, ILogger<MasterSyncJob> logger, IConfiguration config, SyncCoordinator coordinator)
     {
         _services = services;
         _logger = logger;
         _config = config;
+        _coordinator = coordinator;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (TallySyncMode.IsAgentManaged(_config))
+        {
+            _logger.LogInformation("TallySync:Mode is Agent — master sync runs from SaleOrd.SyncAgent instead. Background job disabled.");
+            return;
+        }
+
         var intervalMinutes = _config.GetValue<int>("TallySync:MasterSyncIntervalMinutes", 30);
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            await SyncAllCompaniesAsync();
+            if (_coordinator.TryStart())
+            {
+                try
+                {
+                    await SyncAllCompaniesAsync();
+                }
+                finally
+                {
+                    _coordinator.Finish();
+                }
+            }
+            else
+            {
+                _logger.LogInformation("Skipping master sync cycle — another sync is already in progress.");
+            }
             await Task.Delay(TimeSpan.FromMinutes(intervalMinutes), stoppingToken);
         }
     }
@@ -64,8 +86,16 @@ public class MasterSyncJob : BackgroundService
             return;
         }
 
-        foreach (var company in toSync)
-            await SyncCompanyAsync(db, tallyService, tallyUrl, company);
+        for (int i = 0; i < toSync.Count; i++)
+        {
+            await SyncCompanyAsync(db, tallyService, tallyUrl, toSync[i]);
+            // Space out back-to-back companies — each SyncCompanyAsync call is
+            // already 4 separate Tally requests (ledgers/items/godowns/rates);
+            // firing another company's batch immediately after was part of
+            // what was overloading Tally's HTTP engine into crashing.
+            if (i < toSync.Count - 1)
+                await Task.Delay(800);
+        }
     }
 
     private async Task SyncCompanyAsync(AppDbContext db, TallyService tallyService, string tallyUrl, Company company)
@@ -74,13 +104,27 @@ public class MasterSyncJob : BackgroundService
 
         try
         {
+            // Logging BEFORE each call (not just after the batch succeeds) is
+            // deliberate — a native Tally crash mid-request doesn't throw
+            // until the HTTP call itself fails, so the last "Fetching X..."
+            // line in the logs is what actually pinpoints which query did it.
+            _logger.LogInformation("[{Company}] Fetching ledgers...", company.CompanyName);
             var (lNew, lUpd) = await SyncLedgersAsync(db, tallyService, tallyUrl, company);
+            await Task.Delay(500);
+            _logger.LogInformation("[{Company}] Fetching stock items...", company.CompanyName);
             var (iNew, iUpd) = await SyncStockItemsAsync(db, tallyService, tallyUrl, company);
+            await Task.Delay(500);
+            _logger.LogInformation("[{Company}] Fetching godowns...", company.CompanyName);
             var (gNew, gUpd) = await SyncGodownsAsync(db, tallyService, tallyUrl, company);
+            await Task.Delay(500);
+            // Last-sale-rates is the heaviest of the four (voucher scan, not a
+            // master list) — give Tally a bit more room before/after it.
+            _logger.LogInformation("[{Company}] Fetching last sale rates...", company.CompanyName);
+            var (rNew, rUpd) = await SyncLastSaleRatesAsync(db, tallyService, tallyUrl, company);
 
             company.LastMasterSyncAt = DateTime.Now;
 
-            var msg = $"Ledgers +{lNew} ~{lUpd} | Items +{iNew} ~{iUpd} | Godowns +{gNew} ~{gUpd}";
+            var msg = $"Ledgers +{lNew} ~{lUpd} | Items +{iNew} ~{iUpd} | Godowns +{gNew} ~{gUpd} | Rates +{rNew} ~{rUpd}";
             db.SyncLogs.Add(new SyncLog
             {
                 CompanyId = company.CompanyId,
@@ -252,6 +296,67 @@ public class MasterSyncJob : BackgroundService
             {
                 db.Godowns.Add(g);
                 existing[g.GodownName] = g;
+                added++;
+            }
+        }
+
+        await db.SaveChangesAsync();
+        return (added, updated);
+    }
+
+    private async Task<(int Added, int Updated)> SyncLastSaleRatesAsync(AppDbContext db, TallyService tallyService, string tallyUrl, Company company)
+    {
+        var rates = await tallyService.GetLastSaleRatesAsync(tallyUrl, company);
+        _logger.LogInformation("Last sale rates from Tally for {Co}: {N}", company.TallyCompanyName, rates.Count);
+        if (!rates.Any()) return (0, 0);
+
+        var ledgerIds = (await db.Ledgers
+                .Where(l => l.CompanyId == company.CompanyId)
+                .Select(l => new { l.LedgerId, l.LedgerName })
+                .ToListAsync())
+            .GroupBy(l => NormalizeName(l.LedgerName), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Last().LedgerId, StringComparer.OrdinalIgnoreCase);
+
+        var itemIds = (await db.StockItems
+                .Where(s => s.CompanyId == company.CompanyId)
+                .Select(s => new { s.StockItemId, s.ItemName })
+                .ToListAsync())
+            .GroupBy(s => NormalizeName(s.ItemName), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Last().StockItemId, StringComparer.OrdinalIgnoreCase);
+
+        var existing = (await db.LastSaleRates
+                .Where(r => r.CompanyId == company.CompanyId)
+                .ToListAsync())
+            .ToDictionary(r => (r.LedgerId, r.StockItemId));
+
+        var now = DateTime.Now;
+        int added = 0, updated = 0;
+        foreach (var rate in rates)
+        {
+            if (!ledgerIds.TryGetValue(NormalizeName(rate.PartyName), out var ledgerId)) continue;
+            if (!itemIds.TryGetValue(NormalizeName(rate.ItemName), out var stockItemId)) continue;
+
+            var key = (ledgerId, stockItemId);
+            if (existing.TryGetValue(key, out var ex))
+            {
+                ex.Rate = rate.Rate;
+                ex.SaleDate = rate.SaleDate;
+                ex.LastSyncedAt = now;
+                updated++;
+            }
+            else
+            {
+                var newRate = new LastSaleRate
+                {
+                    CompanyId = company.CompanyId,
+                    LedgerId = ledgerId,
+                    StockItemId = stockItemId,
+                    Rate = rate.Rate,
+                    SaleDate = rate.SaleDate,
+                    LastSyncedAt = now
+                };
+                db.LastSaleRates.Add(newRate);
+                existing[key] = newRate;
                 added++;
             }
         }

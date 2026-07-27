@@ -19,6 +19,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<AppSetting> AppSettings { get; set; }
     public DbSet<RolePermission> RolePermissions { get; set; }
     public DbSet<UserActivity> UserActivities { get; set; }
+    public DbSet<LastSaleRate> LastSaleRates { get; set; }
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -156,5 +157,26 @@ public class AppDbContext : IdentityDbContext<AppUser>
         builder.Entity<RolePermission>()
             .HasIndex(rp => new { rp.Role, rp.PermissionKey })
             .IsUnique();
+
+        builder.Entity<LastSaleRate>()
+            .HasIndex(r => new { r.CompanyId, r.LedgerId, r.StockItemId })
+            .IsUnique();
+        builder.Entity<LastSaleRate>()
+            .Property(r => r.Rate).HasPrecision(18, 2);
+        builder.Entity<LastSaleRate>()
+            .HasOne(r => r.Company)
+            .WithMany()
+            .HasForeignKey(r => r.CompanyId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.Entity<LastSaleRate>()
+            .HasOne(r => r.Ledger)
+            .WithMany()
+            .HasForeignKey(r => r.LedgerId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.Entity<LastSaleRate>()
+            .HasOne(r => r.StockItem)
+            .WithMany()
+            .HasForeignKey(r => r.StockItemId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }

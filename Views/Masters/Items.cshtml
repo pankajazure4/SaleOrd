@@ -9,89 +9,109 @@
     <div class="page-title-sub">@ViewBag.TotalCount items</div>
 </div>
 
-<form method="get" class="mb-3" id="mastersSearchForm">
+<div class="mb-3">
     <div class="input-group">
-        <input type="text" name="q" value="@ViewBag.Q" class="form-control"
-               id="mastersSearchInput"
-               placeholder="Search item name..." autocomplete="off" />
-        @if (!string.IsNullOrEmpty(ViewBag.Q as string))
-        {
-            <a href="/Masters/Items" class="btn btn-outline-danger" title="Clear">
-                <i class="bi bi-x"></i>
-            </a>
-        }
+        <button type="button" class="input-group-text bg-white border-end-0" style="cursor:pointer" onclick="doSearch($('#searchInput').val().trim())" title="Search">
+            <i class="bi bi-search text-muted"></i>
+        </button>
+        <input type="text" id="searchInput" class="form-control border-start-0"
+               placeholder="Search item name..." autocomplete="off" autofocus />
+        <button type="button" id="btnClear" class="btn btn-outline-secondary" style="display:none" onclick="clearSearch()">
+            <i class="bi bi-x"></i>
+        </button>
     </div>
-</form>
+    <div id="searchStatus" class="text-muted small mt-1 px-1"></div>
+</div>
 
-@if (!Model.Any())
-{
+<div id="searchResults">
     <div class="text-center text-muted py-5">
-        <i class="bi bi-box-seam" style="font-size:40px;opacity:.25"></i>
-        <p class="mt-3 fw-semibold">No items found</p>
-        @if (string.IsNullOrEmpty(ViewBag.Q as string))
-        {
-            <p class="small">Sync from Tally first — click the <strong>Sync</strong> button on Dashboard.</p>
-        }
-        else
-        {
-            <p class="small">No results for "<strong>@ViewBag.Q</strong>"</p>
-        }
+        <i class="bi bi-search" style="font-size:40px;opacity:.2"></i>
+        <p class="mt-3 fw-semibold">Type to search</p>
+        <p class="small">Enter a name to search among @ViewBag.TotalCount items</p>
     </div>
-}
-else
-{
-    <div class="list-group">
-    @foreach (var item in Model)
-    {
-        <div class="list-group-item py-2 px-3 border-0 border-bottom">
-            <div class="d-flex justify-content-between align-items-center">
-                <div style="min-width:0">
-                    <div class="fw-semibold text-truncate">@item.ItemName</div>
-                    <div class="text-muted" style="font-size:11px">
-                        @if (!string.IsNullOrEmpty(item.Parent))
-                        {
-                            <span class="me-2"><i class="bi bi-folder"></i> @item.Parent</span>
-                        }
-                        <span class="badge bg-light text-dark border">@item.UOM</span>
-                        @if (!string.IsNullOrEmpty(item.AdditionalUnits))
-                        {
-                            <span class="text-muted ms-1">/ @item.AdditionalUnits</span>
-                        }
-                        @if (item.IsBatchwiseOn)
-                        {
-                            <span class="badge bg-info bg-opacity-10 text-info ms-1" style="font-size:10px">Batch</span>
-                        }
-                    </div>
-                </div>
-                <div class="text-end ms-2 flex-shrink-0">
-                    @if (item.ClosingBalance != 0)
-                    {
-                        <div class="fw-semibold small @(item.ClosingBalance > 0 ? "text-success" : "text-danger")">
-                            @item.ClosingBalance.ToString("N3") @item.UOM
-                        </div>
-                        <div class="text-muted" style="font-size:10px">in stock</div>
-                    }
-                    else
-                    {
-                        <div class="text-muted small">—</div>
-                    }
-                </div>
-            </div>
-        </div>
-    }
-    </div>
-    <div class="text-muted small text-center mt-2">Showing @Model.Count() of @ViewBag.TotalCount items</div>
-}
+</div>
 
 @section Scripts {
 <script>
-    (function () {
-        var timer;
-        $('#mastersSearchInput').on('input', function () {
-            clearTimeout(timer);
-            var form = this.form;
-            timer = setTimeout(function () { form.submit(); }, 250);
-        });
-    })();
+var searchTimer;
+
+$('#searchInput').on('input', function() {
+    clearTimeout(searchTimer);
+    var q = this.value.trim();
+    $('#btnClear').toggle(q.length > 0);
+    if (q.length === 0) { showEmptyState(); return; }
+    if (q.length < 1) { return; }
+    showLoading();
+    searchTimer = setTimeout(function() { doSearch(q); }, 280);
+});
+
+function doSearch(q) {
+    $.get('/Masters/ItemsSearch', { q: q }, function(data) {
+        renderItems(data, q);
+    }).fail(function() {
+        $('#searchResults').html('<div class="alert alert-danger">Search failed. Please try again.</div>');
+    });
+}
+
+function renderItems(items, q) {
+    if (!items.length) {
+        $('#searchStatus').text('');
+        $('#searchResults').html(
+            '<div class="text-center text-muted py-5">' +
+            '<i class="bi bi-box-seam" style="font-size:36px;opacity:.25"></i>' +
+            '<p class="mt-3 fw-semibold">No items found</p>' +
+            '<p class="small">No results for "<strong>' + escHtml(q) + '</strong>"</p></div>');
+        return;
+    }
+
+    $('#searchStatus').text('Showing ' + items.length + ' result' + (items.length > 1 ? 's' : ''));
+    var html = '<div class="list-group">';
+    items.forEach(function(item) {
+        var stock = item.closingBalance !== 0
+            ? '<div class="fw-semibold small ' + (item.closingBalance > 0 ? 'text-success' : 'text-danger') + '">' + fmtNum(item.closingBalance) + ' ' + escHtml(item.uom) + '</div><div class="text-muted" style="font-size:10px">in stock</div>'
+            : '<div class="text-muted small">—</div>';
+
+        var meta = '';
+        if (item.parent) meta += '<span class="me-2"><i class="bi bi-folder"></i> ' + escHtml(item.parent) + '</span>';
+        meta += '<span class="badge bg-light text-dark border">' + escHtml(item.uom) + '</span>';
+        if (item.additionalUnits) meta += '<span class="text-muted ms-1">/ ' + escHtml(item.additionalUnits) + '</span>';
+        if (item.isBatchwiseOn) meta += '<span class="badge bg-info bg-opacity-10 text-info ms-1" style="font-size:10px">Batch</span>';
+
+        html += '<div class="list-group-item py-2 px-3 border-0 border-bottom">' +
+            '<div class="d-flex justify-content-between align-items-center">' +
+            '<div style="min-width:0">' +
+            '<div class="fw-semibold text-truncate">' + escHtml(item.itemName) + '</div>' +
+            '<div class="text-muted" style="font-size:11px">' + meta + '</div>' +
+            '</div>' +
+            '<div class="text-end ms-2 flex-shrink-0">' + stock + '</div>' +
+            '</div></div>';
+    });
+    html += '</div>';
+    if (items.length === 60) html += '<div class="text-muted small text-center mt-2 py-2">Showing top 60 — refine your search for more specific results</div>';
+    $('#searchResults').html(html);
+}
+
+function showEmptyState() {
+    $('#searchStatus').text('');
+    $('#searchResults').html(
+        '<div class="text-center text-muted py-5">' +
+        '<i class="bi bi-search" style="font-size:40px;opacity:.2"></i>' +
+        '<p class="mt-3 fw-semibold">Type to search</p>' +
+        '<p class="small">Enter a name to search among @ViewBag.TotalCount items</p></div>');
+}
+
+function showLoading() {
+    $('#searchStatus').text('');
+    $('#searchResults').html('<div class="text-center py-4 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Searching...</div>');
+}
+
+function clearSearch() {
+    $('#searchInput').val('').focus();
+    $('#btnClear').hide();
+    showEmptyState();
+}
+
+function escHtml(s) { return $('<div>').text(s || '').html(); }
+function fmtNum(n) { return (n||0).toLocaleString('en-IN', {minimumFractionDigits:3, maximumFractionDigits:3}); }
 </script>
 }

@@ -1,0 +1,23 @@
+@{ ViewData["Title"] = "License Required"; }
+<div class="text-center py-5">
+    <i class="bi bi-key-fill text-warning" style="font-size:48px"></i>
+    <h5 class="mt-3">License Required</h5>
+    <p class="text-muted">@ViewBag.Message</p>
+
+    @if ((bool)(ViewBag.IsAdmin ?? false))
+    {
+        <div class="card mx-auto mt-3" style="max-width:420px">
+            <div class="p-3 text-start">
+                <div class="small text-muted mb-1">This machine's ID (send to support to issue a license)</div>
+                <code class="d-block text-break small p-2 bg-light rounded">@ViewBag.MachineId</code>
+            </div>
+        </div>
+        <a href="/Settings" class="btn btn-primary btn-sm mt-3">
+            <i class="bi bi-gear me-1"></i>Go to Settings &gt; License
+        </a>
+    }
+    else
+    {
+        <p class="text-muted">Contact your administrator to activate the license.</p>
+    }
+</div>

@@ -56,20 +56,71 @@ public class DashboardController : Controller
             .Select(o => new { o.SaleOrderId, o.OrderNo, o.LedgerName, o.TotalAmount, o.Status, o.OrderDate, o.CreatedByName })
             .ToListAsync();
 
+        ViewBag.Stats        = stats;
+        ViewBag.RecentOrders = recentOrders;
+        ViewBag.UserName     = user.FullName;
+        ViewBag.Role         = user.Role;
+
+        return View();
+    }
+
+    // Polled periodically by Dashboard/Index.cshtml so stat cards, the recent
+    // orders list, and pending/error counts stay live without a manual reload
+    // (background jobs like OrderPushJob change these outside of any user action).
+    [HttpGet]
+    public async Task<IActionResult> Refresh()
+    {
+        var (companyId, user) = await _resolver.ResolveAsync();
+        if (user == null) return Unauthorized();
+
+        if (!await _permSvc.HasAsync(user.Role, AppPermissions.Dashboard))
+            return Forbid();
+
+        var query = _db.SaleOrders.Where(o => o.CompanyId == companyId);
+        if (user.Role == AppRoles.Salesman)
+            query = query.Where(o => o.CreatedById == user.Id);
+
+        var today      = DateTime.Today;
+        var monthStart = new DateTime(today.Year, today.Month, 1);
+
+        var stats = await query
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                Total      = g.Count(),
+                Pending    = g.Count(o => o.Status == OrderStatus.Pending),
+                Synced     = g.Count(o => o.Status == OrderStatus.Synced),
+                Error      = g.Count(o => o.Status == OrderStatus.Error),
+                TotalValue = g.Sum(o => o.TotalAmount),
+                TodayCount = g.Count(o => o.OrderDate == today),
+                MonthValue = g.Where(o => o.OrderDate >= monthStart).Sum(o => o.TotalAmount)
+            })
+            .FirstOrDefaultAsync();
+
+        var recentOrders = await query
+            .OrderByDescending(o => o.CreatedAt)
+            .Take(10)
+            .Select(o => new
+            {
+                o.SaleOrderId,
+                o.OrderNo,
+                o.LedgerName,
+                o.TotalAmount,
+                status = o.Status.ToString(),
+                orderDate = o.OrderDate.ToString("dd MMM")
+            })
+            .ToListAsync();
+
         var lastSync = await _db.Companies
             .Where(c => c.CompanyId == companyId)
             .Select(c => c.LastMasterSyncAt)
             .FirstOrDefaultAsync();
 
-        ViewBag.Stats        = stats;
-        ViewBag.RecentOrders = recentOrders;
-        ViewBag.LastSync     = lastSync;
-        ViewBag.UserName     = user.FullName;
-        ViewBag.Role         = user.Role;
-        ViewBag.LedgerCount  = await _db.Ledgers.CountAsync(l => l.CompanyId == companyId);
-        ViewBag.ItemCount    = await _db.StockItems.CountAsync(s => s.CompanyId == companyId);
-        ViewBag.GodownCount  = await _db.Godowns.CountAsync(g => g.CompanyId == companyId);
-
-        return View();
+        return Json(new
+        {
+            stats = stats ?? new { Total = 0, Pending = 0, Synced = 0, Error = 0, TotalValue = 0m, TodayCount = 0, MonthValue = 0m },
+            recentOrders,
+            lastSync = lastSync.HasValue ? lastSync.Value.ToString("dd MMM, h:mm tt") : "Never"
+        });
     }
 }

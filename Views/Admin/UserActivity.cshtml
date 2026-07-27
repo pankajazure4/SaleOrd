@@ -27,7 +27,7 @@
             <label class="form-label small fw-semibold">User</label>
             <select name="userId" class="form-select form-select-sm">
                 <option value="">All Users</option>
-                @foreach (dynamic u in ViewBag.Users)
+                @foreach (var u in ViewBag.UserList)
                 {
                     if (ViewBag.UserId != null && u.Id == ViewBag.UserId)
                     {

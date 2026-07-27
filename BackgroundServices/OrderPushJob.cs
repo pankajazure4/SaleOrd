@@ -10,22 +10,44 @@ public class OrderPushJob : BackgroundService
     private readonly IServiceProvider _services;
     private readonly ILogger<OrderPushJob> _logger;
     private readonly IConfiguration _config;
+    private readonly SyncCoordinator _coordinator;
 
-    public OrderPushJob(IServiceProvider services, ILogger<OrderPushJob> logger, IConfiguration config)
+    public OrderPushJob(IServiceProvider services, ILogger<OrderPushJob> logger, IConfiguration config, SyncCoordinator coordinator)
     {
         _services = services;
         _logger = logger;
         _config = config;
+        _coordinator = coordinator;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var intervalMinutes = _config.GetValue<int>("TallySync:OrderPushIntervalMinutes", 5);
+        if (TallySyncMode.IsAgentManaged(_config))
+        {
+            _logger.LogInformation("TallySync:Mode is Agent — order push/invoice check runs from SaleOrd.SyncAgent instead. Background job disabled.");
+            return;
+        }
+
+        var intervalMinutes = _config.GetValue<int>("TallySync:OrderPushIntervalMinutes", 3);
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            await PushPendingOrdersAsync();
-            await CheckInvoiceStatusAsync();
+            if (_coordinator.TryStart())
+            {
+                try
+                {
+                    await PushPendingOrdersAsync();
+                    await CheckInvoiceStatusAsync();
+                }
+                finally
+                {
+                    _coordinator.Finish();
+                }
+            }
+            else
+            {
+                _logger.LogInformation("Skipping order push cycle — another sync is already in progress.");
+            }
             await Task.Delay(TimeSpan.FromMinutes(intervalMinutes), stoppingToken);
         }
     }
@@ -40,22 +62,33 @@ public class OrderPushJob : BackgroundService
         string Setting(string key, string def) =>
             settings.FirstOrDefault(s => s.Key == key)?.Value ?? def;
 
-        var tallyUrl    = Setting("TallyUrl",       "http://localhost:9000");
-        var igstLedger  = Setting("TaxLedgerIGST",  "IGST");
-        var cgstLedger  = Setting("TaxLedgerCGST",  "CGST");
-        var sgstLedger  = Setting("TaxLedgerSGST",  "SGST");
+        var tallyUrl      = Setting("TallyUrl",           "http://localhost:9000");
+        var igstLedger    = Setting("TaxLedgerIGST",       "IGST");
+        var cgstLedger    = Setting("TaxLedgerCGST",       "CGST");
+        var sgstLedger    = Setting("TaxLedgerSGST",       "SGST");
+        var salesLedger   = Setting("SalesLedger",         "Sales");
+        var roundOffLedger= Setting("TaxLedgerRoundOff",   "Round Off");
+        var voucherType   = Setting("DefaultVoucherType",  "Sales Order");
+        var batchName     = Setting("DefaultBatchName",    "Primary Batch");
 
         var pendingOrders = await db.SaleOrders
             .Include(o => o.Items)
+            .Include(o => o.Company)
+            .Include(o => o.Ledger)
             .Where(o => o.Status == OrderStatus.Pending)
             .ToListAsync();
 
-        foreach (var order in pendingOrders)
+        for (int i = 0; i < pendingOrders.Count; i++)
         {
-            _logger.LogInformation("Pushing order {OrderNo} to Tally", order.OrderNo);
+            var order = pendingOrders[i];
+            var companyName = order.Company?.TallyCompanyName ?? string.Empty;
+            var isAlter     = !string.IsNullOrEmpty(order.TallyVoucherNo);
+            _logger.LogInformation("Pushing order {OrderNo} to Tally ({Action})", order.OrderNo, isAlter ? "Alter" : "Create");
 
             var (success, message) = await tallyService.PushSaleOrderAsync(
-                tallyUrl, order, igstLedger, cgstLedger, sgstLedger);
+                tallyUrl, order, companyName,
+                salesLedger, igstLedger, cgstLedger, sgstLedger,
+                roundOffLedger, isAlter, voucherType, batchName);
 
             order.Status = success ? OrderStatus.Synced : OrderStatus.Error;
             order.SyncedAt = DateTime.Now;
@@ -69,6 +102,15 @@ public class OrderPushJob : BackgroundService
                 IsSuccess = success,
                 Message = $"Order {order.OrderNo}: {message}"
             });
+
+            // Tally's HTTP gateway is fragile under back-to-back requests —
+            // firing every pending order's Import Data XML in a tight loop
+            // with zero spacing was implicated (alongside the unbounded
+            // invoice-check scans) in crashing Tally's native process with a
+            // memory access violation. A short pause between pushes gives it
+            // room to breathe.
+            if (i < pendingOrders.Count - 1)
+                await Task.Delay(800);
         }
 
         if (pendingOrders.Any())
@@ -89,23 +131,36 @@ public class OrderPushJob : BackgroundService
             .Take(50)
             .ToListAsync();
 
+        if (!orders.Any()) return;
+
         bool changed = false;
-        foreach (var order in orders)
+        // One Tally round-trip per company for this whole batch, not one per
+        // order — see GetRecentSalesInvoicesAsync for why that mattered.
+        var groups = orders.Where(o => o.Company != null).GroupBy(o => o.Company!).ToList();
+        for (int g = 0; g < groups.Count; g++)
         {
-            if (order.Company == null) continue;
-            var tallyUrl = $"http://{order.Company.TallyIp}:{order.Company.TallyPort}";
+            var company = groups[g].Key;
+            var tallyUrl = $"http://{company.TallyIp}:{company.TallyPort}";
+            var fromDate = groups[g].Min(o => o.OrderDate);
 
-            var (isInvoiced, invNo, invDate) = await tallyService.CheckInvoiceStatusAsync(
-                tallyUrl, order.Company.TallyCompanyName, order.OrderNo);
+            _logger.LogInformation("[{Company}] Checking invoice status for {Count} order(s), from {FromDate:dd-MMM-yyyy}...",
+                company.TallyCompanyName, groups[g].Count(), fromDate);
+            var invoices = await tallyService.GetRecentSalesInvoicesAsync(tallyUrl, company.TallyCompanyName, fromDate);
 
-            if (isInvoiced)
+            foreach (var order in groups[g])
             {
-                order.IsInvoiced       = true;
-                order.TallyInvoiceNo   = invNo;
-                order.TallyInvoiceDate = invDate;
-                changed = true;
-                _logger.LogInformation("Order {OrderNo} invoiced in Tally as {InvNo}", order.OrderNo, invNo);
+                if (TallyService.TryMatchInvoice(invoices, order.OrderNo, out var invNo, out var invDate))
+                {
+                    order.IsInvoiced       = true;
+                    order.TallyInvoiceNo   = invNo;
+                    order.TallyInvoiceDate = invDate;
+                    changed = true;
+                    _logger.LogInformation("Order {OrderNo} invoiced in Tally as {InvNo}", order.OrderNo, invNo);
+                }
             }
+
+            if (g < groups.Count - 1)
+                await Task.Delay(800);
         }
 
         if (changed) await db.SaveChangesAsync();
