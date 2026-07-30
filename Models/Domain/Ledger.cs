@@ -22,6 +22,7 @@ public class Ledger
 
     // Financial
     public decimal CreditLimit { get; set; }
+    public string? CreditPeriod { get; set; }     // Tally's "Default credit period", e.g. "1 Days"
     public decimal OpeningBalance { get; set; }
     public decimal ClosingBalance { get; set; }
 

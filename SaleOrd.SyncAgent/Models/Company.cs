@@ -9,4 +9,8 @@ public class Company
     public string TallyCompanyName { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
     public DateTime? LastMasterSyncAt { get; set; }
+
+    // Watermark for incremental voucher-inventory sync — see
+    // VoucherInventoryEntry / VoucherInventorySyncService.
+    public long? LastVoucherAlterId { get; set; }
 }

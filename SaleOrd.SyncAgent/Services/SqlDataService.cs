@@ -47,9 +47,18 @@ public class SqlDataService
         using var conn = new SqlConnection(connString);
         await conn.OpenAsync();
         var rows = await conn.QueryAsync<Company>(
-            "SELECT CompanyId, CompanyName, TallyIp, TallyPort, TallyCompanyName, IsActive, LastMasterSyncAt " +
+            "SELECT CompanyId, CompanyName, TallyIp, TallyPort, TallyCompanyName, IsActive, LastMasterSyncAt, LastVoucherAlterId " +
             "FROM Companies WHERE IsActive = 1");
         return rows.ToList();
+    }
+
+    public async Task UpdateLastVoucherAlterIdAsync(string connString, int companyId, long alterId)
+    {
+        using var conn = new SqlConnection(connString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync(
+            "UPDATE Companies SET LastVoucherAlterId = @AlterId WHERE CompanyId = @CompanyId",
+            new { AlterId = alterId, CompanyId = companyId });
     }
 
     public async Task<Dictionary<string, string>> GetAppSettingsAsync(string connString)
@@ -90,9 +99,21 @@ public class SqlDataService
             .GroupBy(l => Normalize(l.LedgerName), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.Last().LedgerId, StringComparer.OrdinalIgnoreCase);
 
+        // Collapse same-name entries within this batch to the last one before
+        // upserting — without this, a name appearing twice in Tally's export
+        // both miss the (unchanged) `existing` lookup on their first pass,
+        // so the second occurrence inserts a duplicate row instead of
+        // updating the one the first occurrence just created. That orphaned
+        // duplicate then never gets touched again (existing.Last() picks
+        // only one of the two rows on every future sync).
+        var dedup = incoming
+            .Where(x => !string.IsNullOrWhiteSpace(x.LedgerName))
+            .GroupBy(x => Normalize(x.LedgerName), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.Last());
+
         int added = 0, updated = 0;
         using var tx = conn.BeginTransaction();
-        foreach (var l in incoming.Where(x => !string.IsNullOrWhiteSpace(x.LedgerName)))
+        foreach (var l in dedup)
         {
             var name = Normalize(l.LedgerName);
             if (existing.TryGetValue(name, out var id))
@@ -100,12 +121,12 @@ public class SqlDataService
                 await conn.ExecuteAsync(@"
                     UPDATE Ledgers SET Parent=@Parent, Address=@Address, State=@State, MobileNo=@MobileNo,
                         Email=@Email, LedgerFax=@LedgerFax, GSTNo=@GSTNo, TaxType=@TaxType,
-                        IncomeTaxNo=@IncomeTaxNo, VATTINNo=@VATTINNo, CreditLimit=@CreditLimit,
+                        IncomeTaxNo=@IncomeTaxNo, VATTINNo=@VATTINNo, CreditLimit=@CreditLimit, CreditPeriod=@CreditPeriod,
                         OpeningBalance=@OpeningBalance, ClosingBalance=@ClosingBalance,
                         GUID=@GUID, AlterId=@AlterId, LastSyncedAt=@LastSyncedAt
                     WHERE LedgerId=@LedgerId",
                     new { l.Parent, l.Address, l.State, l.MobileNo, l.Email, l.LedgerFax, l.GSTNo, l.TaxType,
-                          l.IncomeTaxNo, l.VATTINNo, l.CreditLimit, l.OpeningBalance, l.ClosingBalance,
+                          l.IncomeTaxNo, l.VATTINNo, l.CreditLimit, l.CreditPeriod, l.OpeningBalance, l.ClosingBalance,
                           l.GUID, l.AlterId, l.LastSyncedAt, LedgerId = id }, tx);
                 updated++;
             }
@@ -113,13 +134,13 @@ public class SqlDataService
             {
                 await conn.ExecuteAsync(@"
                     INSERT INTO Ledgers (LedgerName, Parent, Address, State, MobileNo, Email, LedgerFax,
-                        GSTNo, TaxType, IncomeTaxNo, VATTINNo, CreditLimit, OpeningBalance, ClosingBalance,
+                        GSTNo, TaxType, IncomeTaxNo, VATTINNo, CreditLimit, CreditPeriod, OpeningBalance, ClosingBalance,
                         GUID, AlterId, CompanyId, LastSyncedAt)
                     VALUES (@LedgerName, @Parent, @Address, @State, @MobileNo, @Email, @LedgerFax,
-                        @GSTNo, @TaxType, @IncomeTaxNo, @VATTINNo, @CreditLimit, @OpeningBalance, @ClosingBalance,
+                        @GSTNo, @TaxType, @IncomeTaxNo, @VATTINNo, @CreditLimit, @CreditPeriod, @OpeningBalance, @ClosingBalance,
                         @GUID, @AlterId, @CompanyId, @LastSyncedAt)",
                     new { LedgerName = name, l.Parent, l.Address, l.State, l.MobileNo, l.Email, l.LedgerFax,
-                          l.GSTNo, l.TaxType, l.IncomeTaxNo, l.VATTINNo, l.CreditLimit, l.OpeningBalance, l.ClosingBalance,
+                          l.GSTNo, l.TaxType, l.IncomeTaxNo, l.VATTINNo, l.CreditLimit, l.CreditPeriod, l.OpeningBalance, l.ClosingBalance,
                           l.GUID, l.AlterId, CompanyId = companyId, l.LastSyncedAt }, tx);
                 added++;
             }
@@ -137,9 +158,16 @@ public class SqlDataService
             .GroupBy(s => Normalize(s.ItemName), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.Last().StockItemId, StringComparer.OrdinalIgnoreCase);
 
+        // See UpsertLedgersAsync for why same-batch names must be collapsed
+        // before upserting.
+        var dedup = incoming
+            .Where(x => !string.IsNullOrWhiteSpace(x.ItemName))
+            .GroupBy(x => Normalize(x.ItemName), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.Last());
+
         int added = 0, updated = 0;
         using var tx = conn.BeginTransaction();
-        foreach (var s in incoming.Where(x => !string.IsNullOrWhiteSpace(x.ItemName)))
+        foreach (var s in dedup)
         {
             var name = Normalize(s.ItemName);
             if (existing.TryGetValue(name, out var id))
@@ -183,9 +211,16 @@ public class SqlDataService
             .GroupBy(g => Normalize(g.GodownName), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.Last().GodownId, StringComparer.OrdinalIgnoreCase);
 
+        // See UpsertLedgersAsync for why same-batch names must be collapsed
+        // before upserting.
+        var dedup = incoming
+            .Where(x => !string.IsNullOrWhiteSpace(x.GodownName))
+            .GroupBy(x => Normalize(x.GodownName), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.Last());
+
         int added = 0, updated = 0;
         using var tx = conn.BeginTransaction();
-        foreach (var g in incoming.Where(x => !string.IsNullOrWhiteSpace(x.GodownName)))
+        foreach (var g in dedup)
         {
             var name = Normalize(g.GodownName);
             if (existing.TryGetValue(name, out var id))
@@ -214,9 +249,15 @@ public class SqlDataService
         return (added, updated);
     }
 
-    public async Task<(int Added, int Updated)> UpsertLastSaleRatesAsync(string connString, int companyId, List<SaleRateRecord> rates)
+    // Replace-by-voucher upsert for VoucherInventoryEntry — a re-synced
+    // voucher (altered in Tally, or reprocessed because a historical batch
+    // overlapped) gets its old rows dropped and fresh ones inserted, rather
+    // than trying to line-match and update individual inventory rows. See
+    // the web app's VoucherInventorySyncService for the fuller design notes.
+    public async Task<(int Added, int Updated)> UpsertVoucherInventoryAsync(
+        string connString, int companyId, List<TallyService.VoucherInventoryRecord> records)
     {
-        if (rates.Count == 0) return (0, 0);
+        if (records.Count == 0) return (0, 0);
         using var conn = new SqlConnection(connString);
         await conn.OpenAsync();
 
@@ -230,35 +271,65 @@ public class SqlDataService
             .GroupBy(s => Normalize(s.ItemName), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.Last().StockItemId, StringComparer.OrdinalIgnoreCase);
 
-        var existing = (await conn.QueryAsync<(int LastSaleRateId, int LedgerId, int StockItemId)>(
-                "SELECT LastSaleRateId, LedgerId, StockItemId FROM LastSaleRates WHERE CompanyId = @CompanyId", new { CompanyId = companyId }))
-            .ToDictionary(r => (r.LedgerId, r.StockItemId), r => r.LastSaleRateId);
-
         int added = 0, updated = 0;
         var now = DateTime.Now;
         using var tx = conn.BeginTransaction();
-        foreach (var rate in rates)
-        {
-            if (!ledgerIds.TryGetValue(Normalize(rate.PartyName), out var ledgerId)) continue;
-            if (!itemIds.TryGetValue(Normalize(rate.ItemName), out var stockItemId)) continue;
 
-            var key = (ledgerId, stockItemId);
-            if (existing.TryGetValue(key, out var id))
+        foreach (var group in records.GroupBy(r => r.GUID))
+        {
+            var existingCount = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM VoucherInventoryEntries WHERE CompanyId = @CompanyId AND VoucherGUID = @Guid",
+                new { CompanyId = companyId, Guid = group.Key }, tx);
+
+            if (existingCount > 0)
             {
                 await conn.ExecuteAsync(
-                    "UPDATE LastSaleRates SET Rate=@Rate, SaleDate=@SaleDate, LastSyncedAt=@Now WHERE LastSaleRateId=@Id",
-                    new { rate.Rate, rate.SaleDate, Now = now, Id = id }, tx);
+                    "DELETE FROM VoucherInventoryEntries WHERE CompanyId = @CompanyId AND VoucherGUID = @Guid",
+                    new { CompanyId = companyId, Guid = group.Key }, tx);
                 updated++;
             }
             else
             {
-                await conn.ExecuteAsync(
-                    "INSERT INTO LastSaleRates (CompanyId, LedgerId, StockItemId, Rate, SaleDate, LastSyncedAt) " +
-                    "VALUES (@CompanyId, @LedgerId, @StockItemId, @Rate, @SaleDate, @Now)",
-                    new { CompanyId = companyId, LedgerId = ledgerId, StockItemId = stockItemId, rate.Rate, rate.SaleDate, Now = now }, tx);
                 added++;
             }
+
+            foreach (var rec in group)
+            {
+                ledgerIds.TryGetValue(Normalize(rec.PartyLedgerName), out var ledgerId);
+                itemIds.TryGetValue(Normalize(rec.StockItemName), out var stockItemId);
+
+                await conn.ExecuteAsync(@"
+                    INSERT INTO VoucherInventoryEntries
+                        (CompanyId, VoucherGUID, VoucherNumber, VoucherTypeName, VoucherDate, AlterId,
+                         PartyLedgerName, LedgerId, StockItemName, StockItemId,
+                         ActualQty, BilledQty, Rate, Amount, Discount, GodownName, LastSyncedAt)
+                    VALUES
+                        (@CompanyId, @VoucherGUID, @VoucherNumber, @VoucherTypeName, @VoucherDate, @AlterId,
+                         @PartyLedgerName, @LedgerId, @StockItemName, @StockItemId,
+                         @ActualQty, @BilledQty, @Rate, @Amount, @Discount, @GodownName, @Now)",
+                    new
+                    {
+                        CompanyId = companyId,
+                        VoucherGUID = rec.GUID,
+                        rec.VoucherNumber,
+                        rec.VoucherTypeName,
+                        rec.VoucherDate,
+                        rec.AlterId,
+                        rec.PartyLedgerName,
+                        LedgerId = ledgerId == 0 ? (int?)null : ledgerId,
+                        rec.StockItemName,
+                        StockItemId = stockItemId == 0 ? (int?)null : stockItemId,
+                        rec.ActualQty,
+                        rec.BilledQty,
+                        rec.Rate,
+                        rec.Amount,
+                        rec.Discount,
+                        rec.GodownName,
+                        Now = now
+                    }, tx);
+            }
         }
+
         tx.Commit();
         return (added, updated);
     }

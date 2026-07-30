@@ -11,6 +11,13 @@ public class Company
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? LastMasterSyncAt { get; set; }
 
+    // Watermark for incremental voucher-inventory sync (see VoucherInventoryEntry).
+    // Null = a full historical batch sync has never completed for this
+    // company yet; once it has, this holds the highest Tally AlterId seen,
+    // so every subsequent sync only asks Tally for what changed since
+    // ($AlterId > LastVoucherAlterId) instead of re-scanning history.
+    public long? LastVoucherAlterId { get; set; }
+
     public ICollection<AppUser> Users { get; set; } = new List<AppUser>();
     public ICollection<Ledger> Ledgers { get; set; } = new List<Ledger>();
     public ICollection<StockItem> StockItems { get; set; } = new List<StockItem>();

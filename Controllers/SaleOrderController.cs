@@ -586,12 +586,14 @@ public class SaleOrderController : Controller
         if (user == null) return Unauthorized();
 
         // Customer+Item last sale rate, pulled from Tally's actual Sales
-        // vouchers at master-sync time — the authoritative source per the
-        // client's requirement. Only falls through when Tally has never
-        // recorded a sale for this exact party+item combination.
-        var tallyRate = await _db.LastSaleRates
-            .Where(r => r.StockItemId == stockItemId && r.LedgerId == ledgerId && r.CompanyId == companyId)
-            .Select(r => (decimal?)r.Rate)
+        // vouchers (VoucherInventoryEntries — full line-level sync, not just
+        // a derived summary) — the authoritative source per the client's
+        // requirement. Only falls through when Tally has never recorded a
+        // sale for this exact party+item combination.
+        var tallyRate = await _db.VoucherInventoryEntries
+            .Where(v => v.StockItemId == stockItemId && v.LedgerId == ledgerId && v.CompanyId == companyId)
+            .OrderByDescending(v => v.VoucherDate)
+            .Select(v => (decimal?)v.Rate)
             .FirstOrDefaultAsync();
 
         if (tallyRate.HasValue)

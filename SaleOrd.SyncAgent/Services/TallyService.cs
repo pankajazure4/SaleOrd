@@ -29,7 +29,7 @@ public class TallyService
             var content = new StringContent(xml, Encoding.UTF8, "application/xml");
             var response = await _http.PostAsync(url, content);
             var body = await response.Content.ReadAsStringAsync();
-            return XDocument.Parse(StripInvalidXmlChars(body));
+            return XDocument.Parse(DeclareUdfNamespace(StripInvalidXmlChars(body)));
         }
         catch (Exception ex)
         {
@@ -59,7 +59,8 @@ public class TallyService
                         <TYPE>Ledger</TYPE>
                         <FETCH>Name,Parent,_Address1,_Address2,PriorStateName,LedgerContact,LedgerPhone,Email,
                                SalesTaxNumber,IncomeTaxNumber,VATTINNUMBER,TaxType,LedgerFax,
-                               OpeningBalance,ClosingBalance,CreditLimit,PartyGSTIN,GUID,AlterId</FETCH>
+                               OpeningBalance,ClosingBalance,CreditLimit,BillCreditPeriod,
+                               LEDGSTREGDETAILS.List:GSTIN,GUID,AlterId</FETCH>
                     </COLLECTION>
                 </TDLMESSAGE>
             </TDL>
@@ -71,7 +72,7 @@ public class TallyService
         if (doc == null) return new();
 
         var now = DateTime.Now;
-        return doc.Descendants("LEDGER")
+        var ledgers = doc.Descendants("LEDGER")
             .Select(el => new Ledger
             {
                 LedgerName     = GetName(el),
@@ -85,11 +86,20 @@ public class TallyService
                               ?? el.Element("LEDGERCONTACT")?.Value?.Trim(),
                 Email          = el.Element("EMAIL")?.Value?.Trim(),
                 LedgerFax      = el.Element("LEDGERFAX")?.Value?.Trim(),
-                GSTNo          = el.Element("PARTYGSTIN")?.Value?.Trim(),
+                // GSTIN lives under the nested LEDGSTREGDETAILS.LIST (a dated
+                // list of registration records) in current Tally releases, not
+                // the flat PARTYGSTIN field — confirmed against a real ledger
+                // export. .LastOrDefault() picks the most recently applicable
+                // registration if a ledger has more than one over time.
+                GSTNo          = el.Descendants("GSTIN").LastOrDefault()?.Value?.Trim(),
                 TaxType        = el.Element("TAXTYPE")?.Value?.Trim(),
                 IncomeTaxNo    = el.Element("INCOMETAXNUMBER")?.Value?.Trim(),
                 VATTINNo       = el.Element("VATTINNUMBER")?.Value?.Trim(),
                 CreditLimit    = ParseDecimal(el.Element("CREDITLIMIT")?.Value),
+                // The ledger master's own field is "BillCreditPeriod" — plain
+                // "CreditPeriod" doesn't exist and silently returned nothing;
+                // confirmed against a real full ledger export.
+                CreditPeriod   = el.Element("BILLCREDITPERIOD")?.Value?.Trim(),
                 OpeningBalance = ParseDecimal(el.Element("OPENINGBALANCE")?.Value),
                 ClosingBalance = ParseDecimal(el.Element("CLOSINGBALANCE")?.Value),
                 GUID           = el.Element("GUID")?.Value?.Trim(),
@@ -99,6 +109,78 @@ public class TallyService
             })
             .Where(l => !string.IsNullOrWhiteSpace(l.LedgerName))
             .ToList();
+
+        // A ledger with no CreditPeriod of its own displays its parent
+        // Group's default in Tally's UI (confirmed on a real ledger export —
+        // "Sundry Debtors" showing "1 Days" for a ledger whose own record has
+        // no CreditPeriod at all), but that resolution only happens client-side
+        // when you pick the party interactively — it's not in the XML export,
+        // and an XML-imported voucher won't get it either unless we resolve it
+        // ourselves. Only bother calling Tally for Group data if some ledger
+        // actually needs it.
+        if (ledgers.Any(l => string.IsNullOrWhiteSpace(l.CreditPeriod)))
+        {
+            var groupCreditPeriods = await GetGroupCreditPeriodsAsync(tallyUrl, company.TallyCompanyName);
+            foreach (var l in ledgers.Where(l => string.IsNullOrWhiteSpace(l.CreditPeriod)))
+                l.CreditPeriod = ResolveGroupCreditPeriod(l.Parent, groupCreditPeriods);
+        }
+
+        return ledgers;
+    }
+
+    // Fetches every Group's own Parent/CreditPeriod so blank ledger-level
+    // CreditPeriod can be resolved by walking up the group hierarchy — see
+    // the call site in GetLedgersAsync.
+    private async Task<Dictionary<string, (string? Parent, string? CreditPeriod)>> GetGroupCreditPeriodsAsync(
+        string tallyUrl, string companyName)
+    {
+        var xml = $@"<ENVELOPE>
+    <HEADER>
+        <VERSION>1</VERSION>
+        <TALLYREQUEST>EXPORT</TALLYREQUEST>
+        <TYPE>COLLECTION</TYPE>
+        <ID>List of Groups</ID>
+    </HEADER>
+    <BODY>
+        <DESC>
+            <STATICVARIABLES>
+                <SVCURRENTCOMPANY>{Escape(companyName)}</SVCURRENTCOMPANY>
+                <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+            </STATICVARIABLES>
+            <TDL>
+                <TDLMESSAGE>
+                    <COLLECTION NAME=""List of Groups"" ISINITIALIZE=""Yes"">
+                        <TYPE>Group</TYPE>
+                        <FETCH>Name,Parent,BillCreditPeriod</FETCH>
+                    </COLLECTION>
+                </TDLMESSAGE>
+            </TDL>
+        </DESC>
+    </BODY>
+</ENVELOPE>";
+
+        var doc = await PostXmlAsync(tallyUrl, xml);
+        if (doc == null) return new();
+
+        return doc.Descendants("GROUP")
+            .GroupBy(el => GetName(el), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                g => g.Key,
+                g => (g.Last().Element("PARENT")?.Value?.Trim(), g.Last().Element("BILLCREDITPERIOD")?.Value?.Trim()),
+                StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string? ResolveGroupCreditPeriod(string? groupName, Dictionary<string, (string? Parent, string? CreditPeriod)> groups)
+    {
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var current = groupName;
+        while (!string.IsNullOrWhiteSpace(current) && visited.Add(current))
+        {
+            if (!groups.TryGetValue(current, out var g)) return null;
+            if (!string.IsNullOrWhiteSpace(g.CreditPeriod)) return g.CreditPeriod;
+            current = g.Parent;
+        }
+        return null;
     }
 
     public async Task<List<StockItem>> GetStockItemsAsync(string tallyUrl, Company company)
@@ -207,71 +289,205 @@ public class TallyService
             .ToList();
     }
 
-    // Bounded to the last 180 days — an unbounded full-history scan here was
-    // found to crash Tally's native HTTP engine on a client install with a
-    // long sales history (see GetRecentSalesInvoicesAsync). No EXPLODEVCHTYPE
-    // either: it forces full voucher-type-class resolution, which a generic
-    // field like AllInventoryEntries doesn't need — confirmed unnecessary by
-    // comparing against LoheBgService, a reference project that reliably
-    // handles 200-300 Tally records per run without it and never crashes.
-    public async Task<List<SaleRateRecord>> GetLastSaleRatesAsync(string tallyUrl, Company company)
+    // Finds every voucher type that behaves as a sale (Abbreviation="Sale"),
+    // not just the one literally named "Sales" — see the web app's
+    // TallyService.GetSalesVoucherTypeNamesAsync for the full reasoning.
+    public async Task<List<string>> GetSalesVoucherTypeNamesAsync(string tallyUrl, string companyName)
     {
-        var fromDate = DateTime.Today.AddDays(-180);
         var xml = $@"<ENVELOPE>
-  <HEADER><VERSION>1</VERSION><TALLYREQUEST>EXPORT</TALLYREQUEST><TYPE>COLLECTION</TYPE><ID>List of Sale Rates</ID></HEADER>
-  <BODY><DESC>
-    <STATICVARIABLES>
-      <SVCURRENTCOMPANY>{Escape(company.TallyCompanyName)}</SVCURRENTCOMPANY>
-      <SVFROMDATE TYPE=""Date"">{fromDate:yyyyMMdd}</SVFROMDATE>
-      <SVTODATE TYPE=""Date"">{DateTime.Today:yyyyMMdd}</SVTODATE>
-      <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-    </STATICVARIABLES>
-    <TDL><TDLMESSAGE>
-      <COLLECTION NAME=""List of Sale Rates"" ISINITIALIZE=""Yes"">
-        <TYPE>Voucher</TYPE>
-        <FILTER>IsSales</FILTER>
-        <FETCH>Date,PartyLedgerName,AllInventoryEntries.List:StockItemName,AllInventoryEntries.List:Rate</FETCH>
-      </COLLECTION>
-      <SYSTEM TYPE=""Formulae"" NAME=""IsSales"">$$IsEqual:$VoucherTypeName:&quot;Sales&quot;</SYSTEM>
-    </TDLMESSAGE></TDL>
-  </DESC></BODY>
+    <HEADER>
+        <VERSION>1</VERSION>
+        <TALLYREQUEST>EXPORT</TALLYREQUEST>
+        <TYPE>COLLECTION</TYPE>
+        <ID>List of Sales Voucher Types</ID>
+    </HEADER>
+    <BODY>
+        <DESC>
+            <STATICVARIABLES>
+                <SVCURRENTCOMPANY>{Escape(companyName)}</SVCURRENTCOMPANY>
+                <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+            </STATICVARIABLES>
+            <TDL>
+                <TDLMESSAGE>
+                    <COLLECTION NAME=""List of Sales Voucher Types"" ISINITIALIZE=""Yes"">
+                        <TYPE>Voucher Type</TYPE>
+                        <FETCH>Name,Parent,MailingName</FETCH>
+                    </COLLECTION>
+                </TDLMESSAGE>
+            </TDL>
+        </DESC>
+    </BODY>
 </ENVELOPE>";
 
         var doc = await PostXmlAsync(tallyUrl, xml);
         if (doc == null) return new();
 
-        var latest = new Dictionary<(string Party, string Item), SaleRateRecord>();
+        var names = doc.Descendants("VOUCHERTYPE")
+            .Where(el => string.Equals(el.Element("MAILINGNAME")?.Value?.Trim(), "Sale", StringComparison.OrdinalIgnoreCase))
+            .Select(el => GetName(el))
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
+        return names.Count > 0 ? names : new List<string> { "Sales" };
+    }
+
+    // Tally's own record of when this company's books begin.
+    public async Task<DateTime?> GetCompanyStartDateAsync(string tallyUrl, string companyName)
+    {
+        var xml = $@"<ENVELOPE>
+    <HEADER>
+        <VERSION>1</VERSION>
+        <TALLYREQUEST>EXPORT</TALLYREQUEST>
+        <TYPE>COLLECTION</TYPE>
+        <ID>List of Companies</ID>
+    </HEADER>
+    <BODY>
+        <DESC>
+            <STATICVARIABLES>
+                <SVCURRENTCOMPANY>{Escape(companyName)}</SVCURRENTCOMPANY>
+                <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+            </STATICVARIABLES>
+            <TDL>
+                <TDLMESSAGE>
+                    <COLLECTION NAME=""List of Companies"" ISINITIALIZE=""Yes"">
+                        <TYPE>Company</TYPE>
+                        <FETCH>Name,StartingFrom</FETCH>
+                    </COLLECTION>
+                </TDLMESSAGE>
+            </TDL>
+        </DESC>
+    </BODY>
+</ENVELOPE>";
+
+        var doc = await PostXmlAsync(tallyUrl, xml);
+        if (doc == null) return null;
+
+        var raw = doc.Descendants("COMPANY").FirstOrDefault()?.Element("STARTINGFROM")?.Value?.Trim();
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        if (DateTime.TryParseExact(raw, "yyyyMMdd", null, System.Globalization.DateTimeStyles.None, out var d))
+            return d;
+        return DateTime.TryParse(raw, out var d2) ? d2 : null;
+    }
+
+    public class VoucherInventoryRecord
+    {
+        public string GUID { get; set; } = "";
+        public string VoucherNumber { get; set; } = "";
+        public string VoucherTypeName { get; set; } = "";
+        public DateTime VoucherDate { get; set; }
+        public long AlterId { get; set; }
+        public string PartyLedgerName { get; set; } = "";
+        public string StockItemName { get; set; } = "";
+        public decimal ActualQty { get; set; }
+        public decimal BilledQty { get; set; }
+        public decimal Rate { get; set; }
+        public decimal Amount { get; set; }
+        public decimal Discount { get; set; }
+        public string? GodownName { get; set; }
+    }
+
+    // Line-level inventory data for Sales-type vouchers — date-range mode
+    // (fromDate/toDate set) for the one-time historical backfill, or
+    // incremental mode (sinceAlterId set) for every sync after that. See
+    // the web app's TallyService.GetVoucherInventoryAsync for the full
+    // reasoning behind the two-phase design.
+    // Success=false means Tally couldn't be reached at all for this batch
+    // (distinct from a successful, empty result) — callers must NOT treat
+    // that as "this date range/watermark has no data" and advance past it.
+    public async Task<(List<VoucherInventoryRecord> Records, bool Success)> GetVoucherInventoryAsync(
+        string tallyUrl, string companyName, List<string> salesVoucherTypeNames,
+        DateTime? fromDate, DateTime? toDate, long? sinceAlterId)
+    {
+        if (salesVoucherTypeNames.Count == 0) return (new(), true);
+
+        // NOTE: only ONE Escape() call for the whole formula (below, at the
+        // <SYSTEM> element) — escaping the quoted name here too double-
+        // encoded the quotes into literal "&quot;" text that Tally's formula
+        // parser then rejected outright ("Bad formula!"), confirmed via a
+        // live Postman test against the client's Tally.
+        var typeMatch = string.Join(" OR ", salesVoucherTypeNames.Select(n =>
+            $@"$$IsEqual:$VoucherTypeName:""{n}"""));
+        var filterFormula = sinceAlterId.HasValue
+            ? $"({typeMatch}) AND $AlterId > {sinceAlterId.Value}"
+            : typeMatch;
+
+        var dateVars = (fromDate.HasValue && toDate.HasValue)
+            ? $@"
+      <SVFROMDATE TYPE=""Date"">{fromDate.Value:yyyyMMdd}</SVFROMDATE>
+      <SVTODATE TYPE=""Date"">{toDate.Value:yyyyMMdd}</SVTODATE>"
+            : "";
+
+        var xml = $@"<ENVELOPE>
+  <HEADER><VERSION>1</VERSION><TALLYREQUEST>EXPORT</TALLYREQUEST><TYPE>COLLECTION</TYPE><ID>VoucherInventory</ID></HEADER>
+  <BODY><DESC>
+    <STATICVARIABLES>
+      <SVCURRENTCOMPANY>{Escape(companyName)}</SVCURRENTCOMPANY>{dateVars}
+      <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+    </STATICVARIABLES>
+    <TDL><TDLMESSAGE>
+      <COLLECTION NAME=""VoucherInventory"" ISINITIALIZE=""Yes"">
+        <TYPE>Voucher</TYPE>
+        <FILTER>IsMatchingSalesVoucher</FILTER>
+        <FETCH>GUID,VoucherNumber,VoucherTypeName,Date,PartyLedgerName,AlterId,
+               AllInventoryEntries.List:StockItemName,
+               AllInventoryEntries.List:ActualQty,
+               AllInventoryEntries.List:BilledQty,
+               AllInventoryEntries.List:Rate,
+               AllInventoryEntries.List:Amount,
+               AllInventoryEntries.List:Discount,
+               AllInventoryEntries.List:BatchAllocations.List:GodownName</FETCH>
+      </COLLECTION>
+      <SYSTEM TYPE=""Formulae"" NAME=""IsMatchingSalesVoucher"">{Escape(filterFormula)}</SYSTEM>
+    </TDLMESSAGE></TDL>
+  </DESC></BODY>
+</ENVELOPE>";
+
+        var doc = await PostXmlAsync(tallyUrl, xml);
+        if (doc == null) return (new(), false);
+
+        var results = new List<VoucherInventoryRecord>();
         foreach (var vch in doc.Descendants("VOUCHER"))
         {
-            var partyName = vch.Element("PARTYLEDGERNAME")?.Value?.Trim();
+            var guid = vch.Element("GUID")?.Value?.Trim();
+            if (string.IsNullOrWhiteSpace(guid)) continue;
+
             var dateVal = vch.Element("DATE")?.Value?.Trim();
-            if (string.IsNullOrWhiteSpace(partyName) || dateVal?.Length != 8) continue;
-            if (!DateTime.TryParseExact(dateVal, "yyyyMMdd", null,
-                    System.Globalization.DateTimeStyles.None, out var saleDate))
+            if (dateVal?.Length != 8 || !DateTime.TryParseExact(dateVal, "yyyyMMdd", null,
+                    System.Globalization.DateTimeStyles.None, out var voucherDate))
                 continue;
+
+            var voucherNumber = vch.Element("VOUCHERNUMBER")?.Value?.Trim() ?? "";
+            var voucherTypeName = vch.Element("VOUCHERTYPENAME")?.Value?.Trim() ?? "";
+            var partyLedgerName = vch.Element("PARTYLEDGERNAME")?.Value?.Trim() ?? "";
+            var alterId = ParseLong(vch.Element("ALTERID")?.Value);
 
             foreach (var entry in vch.Descendants("ALLINVENTORYENTRIES.LIST"))
             {
                 var itemName = entry.Element("STOCKITEMNAME")?.Value?.Trim();
-                var rate = ParseRate(entry.Element("RATE")?.Value);
-                if (string.IsNullOrWhiteSpace(itemName) || rate <= 0) continue;
+                if (string.IsNullOrWhiteSpace(itemName)) continue;
 
-                var key = (partyName, itemName);
-                if (!latest.TryGetValue(key, out var existing) || saleDate > existing.SaleDate)
+                results.Add(new VoucherInventoryRecord
                 {
-                    latest[key] = new SaleRateRecord
-                    {
-                        PartyName = partyName,
-                        ItemName = itemName,
-                        Rate = rate,
-                        SaleDate = saleDate
-                    };
-                }
+                    GUID = guid,
+                    VoucherNumber = voucherNumber,
+                    VoucherTypeName = voucherTypeName,
+                    VoucherDate = voucherDate,
+                    AlterId = alterId,
+                    PartyLedgerName = partyLedgerName,
+                    StockItemName = itemName,
+                    ActualQty = ParseQty(entry.Element("ACTUALQTY")?.Value),
+                    BilledQty = ParseQty(entry.Element("BILLEDQTY")?.Value),
+                    Rate = ParseRate(entry.Element("RATE")?.Value),
+                    Amount = ParseDecimal(entry.Element("AMOUNT")?.Value),
+                    Discount = ParseDecimal(entry.Element("DISCOUNT")?.Value),
+                    GodownName = entry.Descendants("BATCHALLOCATIONS.LIST")
+                        .FirstOrDefault()?.Element("GODOWNNAME")?.Value?.Trim()
+                });
             }
         }
-
-        return latest.Values.ToList();
+        return (results, true);
     }
 
     public async Task<(bool Success, string Message)> PushSaleOrderAsync(
@@ -433,6 +649,7 @@ public class TallyService
 
         var partyGstin  = order.Ledger?.GSTNo?.Trim() ?? "";
         var partyState  = order.Ledger?.State?.Trim() ?? "";
+        var partyCreditPeriod = order.Ledger?.CreditPeriod?.Trim() ?? "";
         var partyAddressLines = (order.Ledger?.Address ?? "")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var addressXml = partyAddressLines.Length == 0 ? "" : $@"
@@ -472,6 +689,7 @@ public class TallyService
             <CONSIGNEECOUNTRYNAME>India</CONSIGNEECOUNTRYNAME>
             {(string.IsNullOrEmpty(partyGstin) ? "" : $"<CONSIGNEEGSTIN>{Escape(partyGstin)}</CONSIGNEEGSTIN>")}
             {(string.IsNullOrEmpty(partyState) ? "" : $"<CONSIGNEESTATENAME>{Escape(partyState)}</CONSIGNEESTATENAME>")}
+            {(string.IsNullOrEmpty(partyCreditPeriod) ? "" : $"<TERMSOFPAYMENT>{Escape(partyCreditPeriod)}</TERMSOFPAYMENT>")}
             <VOUCHERTYPENAME>{Escape(voucherType)}</VOUCHERTYPENAME>
             <PARTYNAME>{Escape(order.LedgerName)}</PARTYNAME>
             <PARTYLEDGERNAME>{Escape(order.LedgerName)}</PARTYLEDGERNAME>
@@ -668,6 +886,17 @@ public class TallyService
     private static readonly Regex XmlNumericCharRef =
         new(@"&#(?:x([0-9a-fA-F]+)|([0-9]+));", RegexOptions.Compiled);
 
+    // Vouchers on a Voucher Type with User Defined Fields configured get their
+    // UDF values wrapped in <UDF:...> tags in Tally's XML export, but Tally
+    // never declares the "UDF" namespace prefix on the root <ENVELOPE> —
+    // XDocument.Parse then throws "'UDF' is an undeclared prefix" for any
+    // batch that happens to include such a voucher. We don't read UDF data at
+    // all, so it's enough to just declare the prefix so the doc parses.
+    private static string DeclareUdfNamespace(string xml) =>
+        xml.Contains("UDF:") && !xml.Contains("xmlns:UDF")
+            ? xml.Replace("<ENVELOPE>", "<ENVELOPE xmlns:UDF=\"TallyUDF\">")
+            : xml;
+
     private static string StripInvalidXmlChars(string xml)
     {
         xml = XmlNumericCharRef.Replace(xml, m =>
@@ -707,5 +936,14 @@ public class TallyService
         var slashIdx = val.IndexOf('/');
         if (slashIdx > 0) val = val[..slashIdx];
         return ParseDecimal(val);
+    }
+
+    private static readonly Regex LeadingNumber = new(@"^\s*(-?[\d,]+(?:\.\d+)?)", RegexOptions.Compiled);
+
+    private static decimal ParseQty(string? val)
+    {
+        if (string.IsNullOrWhiteSpace(val)) return 0;
+        var m = LeadingNumber.Match(val);
+        return m.Success ? ParseDecimal(m.Groups[1].Value) : 0;
     }
 }

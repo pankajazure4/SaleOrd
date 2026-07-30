@@ -18,8 +18,9 @@ public class SyncController : Controller
     private readonly UserActivityService _activity;
     private readonly SyncCoordinator _coordinator;
     private readonly IConfiguration _config;
+    private readonly VoucherInventorySyncService _voucherSync;
 
-    public SyncController(AppDbContext db, TallyService tally, UserManager<AppUser> userManager, UserActivityService activity, SyncCoordinator coordinator, IConfiguration config)
+    public SyncController(AppDbContext db, TallyService tally, UserManager<AppUser> userManager, UserActivityService activity, SyncCoordinator coordinator, IConfiguration config, VoucherInventorySyncService voucherSync)
     {
         _db = db;
         _tally = tally;
@@ -27,6 +28,7 @@ public class SyncController : Controller
         _activity = activity;
         _coordinator = coordinator;
         _config = config;
+        _voucherSync = voucherSync;
     }
 
     [HttpPost("trigger-masters")]
@@ -150,8 +152,7 @@ public class SyncController : Controller
                 await UpsertItemsAsync(company.CompanyId, items);
                 await UpsertGodownsAsync(company.CompanyId, godowns);
 
-                var rates = await _tally.GetLastSaleRatesAsync(tallyUrl, company);
-                await UpsertLastSaleRatesAsync(company.CompanyId, rates);
+                var (vNew, vUpd, vMode) = await _voucherSync.SyncCompanyAsync(_db, _tally, tallyUrl, company);
 
                 company.LastMasterSyncAt = DateTime.Now;
                 _db.SyncLogs.Add(new SyncLog
@@ -159,7 +160,7 @@ public class SyncController : Controller
                     CompanyId = company.CompanyId,
                     SyncType = "ManualSync",
                     IsSuccess = true,
-                    Message = $"[{company.CompanyName}] Ledgers: {ledgers.Count}, Items: {items.Count}, Godowns: {godowns.Count}, Rates: {rates.Count}"
+                    Message = $"[{company.CompanyName}] Ledgers: {ledgers.Count}, Items: {items.Count}, Godowns: {godowns.Count}, Vouchers +{vNew} ~{vUpd} ({vMode})"
                 });
 
                 if (ci < toSync.Count - 1)
@@ -168,7 +169,7 @@ public class SyncController : Controller
                 totalLedgers += await _db.Ledgers.CountAsync(l => l.CompanyId == company.CompanyId);
                 totalItems += await _db.StockItems.CountAsync(s => s.CompanyId == company.CompanyId);
                 totalGodowns += await _db.Godowns.CountAsync(g => g.CompanyId == company.CompanyId);
-                totalRates += await _db.LastSaleRates.CountAsync(r => r.CompanyId == company.CompanyId);
+                totalRates += await _db.VoucherInventoryEntries.CountAsync(v => v.CompanyId == company.CompanyId);
             }
 
             await _db.SaveChangesAsync();
@@ -301,6 +302,7 @@ public class SyncController : Controller
                 ex.IncomeTaxNo = l.IncomeTaxNo;
                 ex.VATTINNo = l.VATTINNo;
                 ex.CreditLimit = l.CreditLimit;
+                ex.CreditPeriod = l.CreditPeriod;
                 ex.OpeningBalance = l.OpeningBalance;
                 ex.ClosingBalance = l.ClosingBalance;
                 ex.GUID = l.GUID;
@@ -401,60 +403,6 @@ public class SyncController : Controller
         await _db.SaveChangesAsync();
     }
 
-    private async Task UpsertLastSaleRatesAsync(int companyId, List<SaleRateRecord> rates)
-    {
-        if (!rates.Any()) return;
-
-        var ledgerIds = (await _db.Ledgers
-                .Where(l => l.CompanyId == companyId)
-                .Select(l => new { l.LedgerId, l.LedgerName })
-                .ToListAsync())
-            .GroupBy(l => NormalizeName(l.LedgerName), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Last().LedgerId, StringComparer.OrdinalIgnoreCase);
-
-        var itemIds = (await _db.StockItems
-                .Where(s => s.CompanyId == companyId)
-                .Select(s => new { s.StockItemId, s.ItemName })
-                .ToListAsync())
-            .GroupBy(s => NormalizeName(s.ItemName), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Last().StockItemId, StringComparer.OrdinalIgnoreCase);
-
-        var existing = (await _db.LastSaleRates
-                .Where(r => r.CompanyId == companyId)
-                .ToListAsync())
-            .ToDictionary(r => (r.LedgerId, r.StockItemId));
-
-        var now = DateTime.Now;
-        foreach (var rate in rates)
-        {
-            if (!ledgerIds.TryGetValue(NormalizeName(rate.PartyName), out var ledgerId)) continue;
-            if (!itemIds.TryGetValue(NormalizeName(rate.ItemName), out var stockItemId)) continue;
-
-            var key = (ledgerId, stockItemId);
-            if (existing.TryGetValue(key, out var ex))
-            {
-                ex.Rate = rate.Rate;
-                ex.SaleDate = rate.SaleDate;
-                ex.LastSyncedAt = now;
-            }
-            else
-            {
-                var newRate = new LastSaleRate
-                {
-                    CompanyId = companyId,
-                    LedgerId = ledgerId,
-                    StockItemId = stockItemId,
-                    Rate = rate.Rate,
-                    SaleDate = rate.SaleDate,
-                    LastSyncedAt = now
-                };
-                _db.LastSaleRates.Add(newRate);
-                existing[key] = newRate;
-            }
-        }
-
-        await _db.SaveChangesAsync();
-    }
 
     private async Task<(int Pushed, int Failed)> PushPendingOrdersAsync(string tallyUrl, List<Company> companies)
     {

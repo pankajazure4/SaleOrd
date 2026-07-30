@@ -20,6 +20,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<RolePermission> RolePermissions { get; set; }
     public DbSet<UserActivity> UserActivities { get; set; }
     public DbSet<LastSaleRate> LastSaleRates { get; set; }
+    public DbSet<VoucherInventoryEntry> VoucherInventoryEntries { get; set; }
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -177,6 +178,36 @@ public class AppDbContext : IdentityDbContext<AppUser>
             .HasOne(r => r.StockItem)
             .WithMany()
             .HasForeignKey(r => r.StockItemId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.Entity<VoucherInventoryEntry>()
+            .HasIndex(v => new { v.CompanyId, v.VoucherGUID });
+        builder.Entity<VoucherInventoryEntry>()
+            .HasIndex(v => new { v.CompanyId, v.LedgerId, v.StockItemId, v.VoucherDate });
+        builder.Entity<VoucherInventoryEntry>()
+            .Property(v => v.ActualQty).HasPrecision(18, 3);
+        builder.Entity<VoucherInventoryEntry>()
+            .Property(v => v.BilledQty).HasPrecision(18, 3);
+        builder.Entity<VoucherInventoryEntry>()
+            .Property(v => v.Rate).HasPrecision(18, 2);
+        builder.Entity<VoucherInventoryEntry>()
+            .Property(v => v.Amount).HasPrecision(18, 2);
+        builder.Entity<VoucherInventoryEntry>()
+            .Property(v => v.Discount).HasPrecision(18, 2);
+        builder.Entity<VoucherInventoryEntry>()
+            .HasOne(v => v.Company)
+            .WithMany()
+            .HasForeignKey(v => v.CompanyId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.Entity<VoucherInventoryEntry>()
+            .HasOne(v => v.Ledger)
+            .WithMany()
+            .HasForeignKey(v => v.LedgerId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.Entity<VoucherInventoryEntry>()
+            .HasOne(v => v.StockItem)
+            .WithMany()
+            .HasForeignKey(v => v.StockItemId)
             .OnDelete(DeleteBehavior.Restrict);
     }
 }

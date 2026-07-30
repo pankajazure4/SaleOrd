@@ -26,6 +26,7 @@ public class SyncOrchestrator
 {
     private readonly SqlDataService _sql = new();
     private readonly TallyService _tally;
+    private readonly VoucherInventorySyncService _voucherSync;
     private readonly AgentLogger _logger;
     private readonly SemaphoreSlim _lock = new(1, 1);
 
@@ -47,6 +48,7 @@ public class SyncOrchestrator
     {
         _logger = logger;
         _tally = new TallyService(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }, logger);
+        _voucherSync = new VoucherInventorySyncService(_sql, _tally, logger);
     }
 
     public void Start(AgentConfig config)
@@ -171,8 +173,6 @@ public class SyncOrchestrator
                 _logger.Info($"[{company.CompanyName}] Fetching godowns...");
                 var godowns = await _tally.GetGodownsAsync(_config.TallyUrl, company);
                 await Task.Delay(500);
-                _logger.Info($"[{company.CompanyName}] Fetching last sale rates...");
-                var rates   = await _tally.GetLastSaleRatesAsync(_config.TallyUrl, company);
 
                 _logger.Info($"[{company.CompanyName}] Saving ledgers to SQL...");
                 var (lNew, lUpd) = await _sql.UpsertLedgersAsync(_connString, company.CompanyId, ledgers);
@@ -180,12 +180,16 @@ public class SyncOrchestrator
                 var (iNew, iUpd) = await _sql.UpsertStockItemsAsync(_connString, company.CompanyId, items);
                 _logger.Info($"[{company.CompanyName}] Saving godowns to SQL...");
                 var (gNew, gUpd) = await _sql.UpsertGodownsAsync(_connString, company.CompanyId, godowns);
-                _logger.Info($"[{company.CompanyName}] Saving last sale rates to SQL...");
-                var (rNew, rUpd) = await _sql.UpsertLastSaleRatesAsync(_connString, company.CompanyId, rates);
+
+                // Voucher-inventory sync replaces the old bounded-rescan
+                // "last sale rate" approach — full historical batch once,
+                // then incremental AlterId-watermark syncs from then on.
+                _logger.Info($"[{company.CompanyName}] Syncing voucher inventory ({(company.LastVoucherAlterId == null ? "full history" : "incremental")})...");
+                var (vNew, vUpd, vMode) = await _voucherSync.SyncCompanyAsync(_connString, _config.TallyUrl, company);
 
                 await _sql.MarkCompanySyncedAsync(_connString, company.CompanyId);
 
-                var msg = $"Ledgers +{lNew} ~{lUpd} | Items +{iNew} ~{iUpd} | Godowns +{gNew} ~{gUpd} | Rates +{rNew} ~{rUpd}";
+                var msg = $"Ledgers +{lNew} ~{lUpd} | Items +{iNew} ~{iUpd} | Godowns +{gNew} ~{gUpd} | Vouchers +{vNew} ~{vUpd} ({vMode})";
                 await _sql.InsertSyncLogAsync(_connString, company.CompanyId, "MasterSync", true, msg);
                 _logger.Info($"[{company.CompanyName}] {msg}");
             }
@@ -205,7 +209,31 @@ public class SyncOrchestrator
 
     private async Task RunOrderCycleAsync()
     {
-        var companies = await _sql.GetActiveCompaniesAsync(_connString);
+        // Logging BEFORE each step — this method previously had zero log
+        // output until the first company-level "Pushing order..."/"Checking
+        // invoice status..." line, which meant a hang anywhere in these
+        // earlier SQL/Tally calls was completely invisible in the Logs tab.
+        _logger.Info("Order cycle: loading active companies from SQL...");
+        var allCompanies = await _sql.GetActiveCompaniesAsync(_connString);
+
+        // Only touch companies that are actually open in Tally right now —
+        // mirrors the same check RunMasterSyncAsync already does. Without
+        // this, a stale/deprecated DB company row (IsActive=1 but not the
+        // company currently loaded in Tally) still gets an invoice-check
+        // query sent for it, which either errors or — as seen on a client
+        // install — hangs until the 30s HttpClient timeout, every cycle,
+        // for no useful result.
+        _logger.Info("Order cycle: checking Tally status...");
+        var (reachable, openInTally) = await _tally.CheckStatusAsync(_config.TallyUrl);
+        if (!reachable)
+        {
+            _logger.Warn("Order cycle skipped — Tally unreachable.");
+            return;
+        }
+        var companies = allCompanies.Where(c => openInTally.Any(o =>
+            string.Equals(Norm(o), Norm(c.TallyCompanyName), StringComparison.OrdinalIgnoreCase))).ToList();
+
+        _logger.Info("Order cycle: loading app settings from SQL...");
         var settings = await _sql.GetAppSettingsAsync(_connString);
         string Setting(string key, string def) => settings.TryGetValue(key, out var v) ? v : def;
 
@@ -219,11 +247,14 @@ public class SyncOrchestrator
 
         int pushed = 0, failed = 0, invoiced = 0;
         var companyList = companies.ToList();
+        _logger.Info($"Order cycle: {companyList.Count} compan{(companyList.Count == 1 ? "y" : "ies")} to process.");
 
         for (int ci = 0; ci < companyList.Count; ci++)
         {
             var company = companyList[ci];
+            _logger.Info($"[{company.CompanyName}] Loading pending orders from SQL...");
             var pending = await _sql.GetPendingOrdersAsync(_connString, company.CompanyId);
+            _logger.Info($"[{company.CompanyName}] {pending.Count} pending order(s) loaded.");
             for (int i = 0; i < pending.Count; i++)
             {
                 var order = pending[i];
@@ -248,7 +279,9 @@ public class SyncOrchestrator
                     await Task.Delay(800);
             }
 
+            _logger.Info($"[{company.CompanyName}] Loading uninvoiced synced orders from SQL...");
             var uninvoiced = await _sql.GetUninvoicedSyncedOrdersAsync(_connString, company.CompanyId);
+            _logger.Info($"[{company.CompanyName}] {uninvoiced.Count} uninvoiced order(s) loaded.");
             if (uninvoiced.Count > 0)
             {
                 // One Tally round-trip for this whole batch, not one per

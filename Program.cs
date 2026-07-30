@@ -46,6 +46,7 @@ builder.Services.AddScoped<SaleOrd.Services.ActiveCompanyResolver>();
 builder.Services.AddScoped<SaleOrd.Services.PermissionService>();
 builder.Services.AddScoped<SaleOrd.Services.UserActivityService>();
 builder.Services.AddScoped<SaleOrd.Services.LicenseService>();
+builder.Services.AddScoped<SaleOrd.Services.VoucherInventorySyncService>();
 builder.Services.AddSingleton<SaleOrd.Services.SyncCoordinator>();
 builder.Services.AddMemoryCache();
 builder.Services.AddControllersWithViews();

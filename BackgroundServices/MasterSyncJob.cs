@@ -56,6 +56,7 @@ public class MasterSyncJob : BackgroundService
         using var scope = _services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var tallyService = scope.ServiceProvider.GetRequiredService<TallyService>();
+        var voucherSyncService = scope.ServiceProvider.GetRequiredService<VoucherInventorySyncService>();
 
         var saved = await db.AppSettings.Where(s => s.Key == "TallyUrl").Select(s => s.Value).FirstOrDefaultAsync();
         var tallyUrl = !string.IsNullOrWhiteSpace(saved)
@@ -88,7 +89,7 @@ public class MasterSyncJob : BackgroundService
 
         for (int i = 0; i < toSync.Count; i++)
         {
-            await SyncCompanyAsync(db, tallyService, tallyUrl, toSync[i]);
+            await SyncCompanyAsync(db, tallyService, voucherSyncService, tallyUrl, toSync[i]);
             // Space out back-to-back companies — each SyncCompanyAsync call is
             // already 4 separate Tally requests (ledgers/items/godowns/rates);
             // firing another company's batch immediately after was part of
@@ -98,7 +99,7 @@ public class MasterSyncJob : BackgroundService
         }
     }
 
-    private async Task SyncCompanyAsync(AppDbContext db, TallyService tallyService, string tallyUrl, Company company)
+    private async Task SyncCompanyAsync(AppDbContext db, TallyService tallyService, VoucherInventorySyncService voucherSyncService, string tallyUrl, Company company)
     {
         _logger.LogInformation("Starting master sync for company: {Company}", company.CompanyName);
 
@@ -117,14 +118,17 @@ public class MasterSyncJob : BackgroundService
             _logger.LogInformation("[{Company}] Fetching godowns...", company.CompanyName);
             var (gNew, gUpd) = await SyncGodownsAsync(db, tallyService, tallyUrl, company);
             await Task.Delay(500);
-            // Last-sale-rates is the heaviest of the four (voucher scan, not a
-            // master list) — give Tally a bit more room before/after it.
-            _logger.LogInformation("[{Company}] Fetching last sale rates...", company.CompanyName);
-            var (rNew, rUpd) = await SyncLastSaleRatesAsync(db, tallyService, tallyUrl, company);
+            // Voucher-inventory sync replaces the old bounded-rescan "last
+            // sale rate" approach — full historical batch once, then
+            // incremental AlterId-watermark syncs from then on. See
+            // VoucherInventorySyncService for why.
+            _logger.LogInformation("[{Company}] Syncing voucher inventory ({Mode})...", company.CompanyName,
+                company.LastVoucherAlterId == null ? "full history" : "incremental");
+            var (vNew, vUpd, vMode) = await voucherSyncService.SyncCompanyAsync(db, tallyService, tallyUrl, company);
 
             company.LastMasterSyncAt = DateTime.Now;
 
-            var msg = $"Ledgers +{lNew} ~{lUpd} | Items +{iNew} ~{iUpd} | Godowns +{gNew} ~{gUpd} | Rates +{rNew} ~{rUpd}";
+            var msg = $"Ledgers +{lNew} ~{lUpd} | Items +{iNew} ~{iUpd} | Godowns +{gNew} ~{gUpd} | Vouchers +{vNew} ~{vUpd} ({vMode})";
             db.SyncLogs.Add(new SyncLog
             {
                 CompanyId = company.CompanyId,
@@ -185,6 +189,7 @@ public class MasterSyncJob : BackgroundService
                 ex.IncomeTaxNo = l.IncomeTaxNo;
                 ex.VATTINNo = l.VATTINNo;
                 ex.CreditLimit = l.CreditLimit;
+                ex.CreditPeriod = l.CreditPeriod;
                 ex.OpeningBalance = l.OpeningBalance;
                 ex.ClosingBalance = l.ClosingBalance;
                 ex.GUID = l.GUID;
@@ -304,66 +309,6 @@ public class MasterSyncJob : BackgroundService
         return (added, updated);
     }
 
-    private async Task<(int Added, int Updated)> SyncLastSaleRatesAsync(AppDbContext db, TallyService tallyService, string tallyUrl, Company company)
-    {
-        var rates = await tallyService.GetLastSaleRatesAsync(tallyUrl, company);
-        _logger.LogInformation("Last sale rates from Tally for {Co}: {N}", company.TallyCompanyName, rates.Count);
-        if (!rates.Any()) return (0, 0);
-
-        var ledgerIds = (await db.Ledgers
-                .Where(l => l.CompanyId == company.CompanyId)
-                .Select(l => new { l.LedgerId, l.LedgerName })
-                .ToListAsync())
-            .GroupBy(l => NormalizeName(l.LedgerName), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Last().LedgerId, StringComparer.OrdinalIgnoreCase);
-
-        var itemIds = (await db.StockItems
-                .Where(s => s.CompanyId == company.CompanyId)
-                .Select(s => new { s.StockItemId, s.ItemName })
-                .ToListAsync())
-            .GroupBy(s => NormalizeName(s.ItemName), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Last().StockItemId, StringComparer.OrdinalIgnoreCase);
-
-        var existing = (await db.LastSaleRates
-                .Where(r => r.CompanyId == company.CompanyId)
-                .ToListAsync())
-            .ToDictionary(r => (r.LedgerId, r.StockItemId));
-
-        var now = DateTime.Now;
-        int added = 0, updated = 0;
-        foreach (var rate in rates)
-        {
-            if (!ledgerIds.TryGetValue(NormalizeName(rate.PartyName), out var ledgerId)) continue;
-            if (!itemIds.TryGetValue(NormalizeName(rate.ItemName), out var stockItemId)) continue;
-
-            var key = (ledgerId, stockItemId);
-            if (existing.TryGetValue(key, out var ex))
-            {
-                ex.Rate = rate.Rate;
-                ex.SaleDate = rate.SaleDate;
-                ex.LastSyncedAt = now;
-                updated++;
-            }
-            else
-            {
-                var newRate = new LastSaleRate
-                {
-                    CompanyId = company.CompanyId,
-                    LedgerId = ledgerId,
-                    StockItemId = stockItemId,
-                    Rate = rate.Rate,
-                    SaleDate = rate.SaleDate,
-                    LastSyncedAt = now
-                };
-                db.LastSaleRates.Add(newRate);
-                existing[key] = newRate;
-                added++;
-            }
-        }
-
-        await db.SaveChangesAsync();
-        return (added, updated);
-    }
 
     private static IEnumerable<T> DeduplicateByName<T>(
         IEnumerable<T> source,
