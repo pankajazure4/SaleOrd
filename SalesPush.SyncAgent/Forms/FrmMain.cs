@@ -1,5 +1,6 @@
 using System.Reflection;
 using Microsoft.Win32;
+using SalesPush.SyncAgent.Licensing;
 using SalesPush.SyncAgent.Models;
 using SalesPush.SyncAgent.Services;
 
@@ -10,6 +11,7 @@ public class FrmMain : Form
     private readonly ConfigService _configSvc = new();
     private readonly AgentLogger _logger;
     private readonly SyncOrchestrator _orchestrator;
+    private readonly LicenseService _licenseSvc;
     private AgentConfig _config = new();
     private bool _reallyExit;
 
@@ -38,6 +40,13 @@ public class FrmMain : Form
     private CheckBox _chkAutoStart = new();
     private Label _lblConfigMsg = new();
 
+    // License section (Config tab)
+    private Label _lblLicenseStatus = new();
+    private Label _lblLicenseKeyMasked = new();
+
+    // Database section (Config tab) — groundwork only, see AgentConfig.cs
+    private TextBox _txtSqlConnectionString = new();
+
     // Logs tab
     private TextBox _txtLogs = new();
 
@@ -47,13 +56,17 @@ public class FrmMain : Form
     {
         _logger = new AgentLogger(ConfigService.LogFilePath);
         _orchestrator = new SyncOrchestrator(_logger);
+        _licenseSvc = new LicenseService(_configSvc);
 
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
         Text = $"SalesPush Sync Agent — v{version}";
-        Width = 720;
-        Height = 620;
+        Width = 900;
+        Height = 700;
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(640, 520);
+        WindowState = FormWindowState.Maximized;
+        MinimumSize = new Size(760, 560);
+        BackColor = UiTheme.Background;
+        Font = new Font("Segoe UI", 9.5f);
 
         try { Icon = new Icon(Path.Combine(AppContext.BaseDirectory, "agent.ico")); }
         catch { /* fall back to the default form icon if the file isn't next to the exe for some reason */ }
@@ -77,7 +90,8 @@ public class FrmMain : Form
         if (!string.IsNullOrWhiteSpace(_config.ApiBaseUrl) && !string.IsNullOrWhiteSpace(_config.TallyUrl))
         {
             _orchestrator.Start(_config);
-            _btnStartStop.Text = "Stop Agent";
+            _btnStartStop.Text = "⏹  Stop Agent";
+            UiTheme.StyleButton(_btnStartStop, UiTheme.Danger);
         }
 
         if (_config.StartMinimized)
@@ -91,11 +105,11 @@ public class FrmMain : Form
 
     private void BuildUi()
     {
-        var tabs = new TabControl { Dock = DockStyle.Fill };
+        var tabs = new TabControl { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 9.5f), Padding = new Point(16, 6) };
 
-        var tabStatus = new TabPage("Status");
-        var tabConfig = new TabPage("Configuration");
-        var tabLogs = new TabPage("Logs");
+        var tabStatus = new TabPage("📊  Status") { BackColor = UiTheme.Background };
+        var tabConfig = new TabPage("⚙️  Configuration") { BackColor = UiTheme.Background };
+        var tabLogs = new TabPage("📝  Logs") { BackColor = UiTheme.Background };
 
         BuildStatusTab(tabStatus);
         BuildConfigTab(tabConfig);
@@ -110,65 +124,88 @@ public class FrmMain : Form
 
     private void BuildStatusTab(TabPage page)
     {
-        var panel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 3,
-            Padding = new Padding(16),
-            AutoSize = true
-        };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+        var card = UiTheme.CreateCard("⚡  Agent Control");
+        card.Dock = DockStyle.Top;
+        card.Height = 150;
+        card.Margin = new Padding(16);
 
-        var btnTestApi = new Button { Text = "Test API", AutoSize = true };
+        _lblRunState.Text = "● Agent: stopped";
+        _lblRunState.AutoSize = true;
+        _lblRunState.Font = new Font("Segoe UI", 12f, FontStyle.Bold);
+        _lblRunState.ForeColor = UiTheme.Danger;
+        _lblRunState.Location = new Point(20, 50);
+
+        _btnStartStop.Text = "▶  Start Agent";
+        UiTheme.StyleButton(_btnStartStop, UiTheme.Success);
+        _btnStartStop.Location = new Point(20, 90);
+        _btnStartStop.Click += BtnStartStop_Click;
+
+        _btnPushNow.Text = "⬆  Push Now";
+        UiTheme.StyleButton(_btnPushNow, UiTheme.Primary);
+        _btnPushNow.Location = new Point(_btnStartStop.Right + 12, 90);
+        _btnPushNow.Click += async (_, _) => await PushNowClicked();
+
+        card.Controls.Add(_lblRunState);
+        card.Controls.Add(_btnStartStop);
+        card.Controls.Add(_btnPushNow);
+
+        var cardConn = UiTheme.CreateCard("🔌  Connections");
+        cardConn.Dock = DockStyle.Top;
+        cardConn.Height = 150;
+        cardConn.Margin = new Padding(16, 0, 16, 16);
+
+        var btnTestApi = new Button { Text = "Test API", Location = new Point(20, 54) };
+        UiTheme.StyleButton(btnTestApi, UiTheme.Info);
         btnTestApi.Click += async (_, _) => await TestApiClicked();
 
-        var btnTestTally = new Button { Text = "Test Tally", AutoSize = true };
+        _lblApiStatus = UiTheme.StatusChip("API: unknown", UiTheme.TextMuted);
+        _lblApiStatus.Location = new Point(btnTestApi.Right + 16, 62);
+
+        var btnTestTally = new Button { Text = "Test Tally", Location = new Point(20, 96) };
+        UiTheme.StyleButton(btnTestTally, UiTheme.Info);
         btnTestTally.Click += async (_, _) => await TestTallyClicked();
 
-        _lblApiStatus.Text = "API: unknown";
-        _lblApiStatus.AutoSize = true;
-        _lblTallyStatus.Text = "Tally: unknown";
-        _lblTallyStatus.AutoSize = true;
+        _lblTallyStatus = UiTheme.StatusChip("Tally: unknown", UiTheme.TextMuted);
+        _lblTallyStatus.Location = new Point(btnTestTally.Right + 16, 104);
+
+        cardConn.Controls.Add(btnTestApi);
+        cardConn.Controls.Add(_lblApiStatus);
+        cardConn.Controls.Add(btnTestTally);
+        cardConn.Controls.Add(_lblTallyStatus);
+
+        var cardSchedule = UiTheme.CreateCard("🕐  Schedule");
+        cardSchedule.Dock = DockStyle.Top;
+        cardSchedule.Height = 130;
+        cardSchedule.Margin = new Padding(16, 0, 16, 16);
 
         _lblLastPush.Text = "Last push cycle: never";
         _lblLastPush.AutoSize = true;
+        _lblLastPush.Location = new Point(20, 54);
+
         _lblNextPush.Text = "Next push cycle: —";
         _lblNextPush.AutoSize = true;
-
-        _lblRunState.Text = "Agent: stopped";
-        _lblRunState.AutoSize = true;
-        _lblRunState.Font = new Font(_lblRunState.Font, FontStyle.Bold);
-
-        _btnStartStop.Text = "Start Agent";
-        _btnStartStop.AutoSize = true;
-        _btnStartStop.Click += BtnStartStop_Click;
-
-        _btnPushNow.Text = "Push Now";
-        _btnPushNow.AutoSize = true;
-        _btnPushNow.Click += async (_, _) => await PushNowClicked();
+        _lblNextPush.Location = new Point(20, 80);
 
         var lblLogPath = new Label
         {
             Text = "Log file: " + ConfigService.LogFilePath,
             AutoSize = true,
-            ForeColor = Color.Gray,
-            Font = new Font(_lblRunState.Font.FontFamily, 8)
+            ForeColor = UiTheme.TextMuted,
+            Font = new Font("Segoe UI", 8f),
+            Location = new Point(20, 106)
         };
 
-        int row = 0;
-        panel.RowCount = 8;
-        panel.Controls.Add(_lblRunState, 0, row); panel.Controls.Add(_btnStartStop, 1, row); panel.Controls.Add(_btnPushNow, 2, row); row++;
-        panel.Controls.Add(new Label { Text = "", Height = 10 }, 0, row); row++;
-        panel.Controls.Add(_lblApiStatus, 0, row); panel.Controls.Add(btnTestApi, 1, row); row++;
-        panel.Controls.Add(_lblTallyStatus, 0, row); panel.Controls.Add(btnTestTally, 1, row); row++;
-        panel.Controls.Add(new Label { Text = "", Height = 10 }, 0, row); row++;
-        panel.Controls.Add(_lblLastPush, 0, row); panel.Controls.Add(_lblNextPush, 1, row); row++;
-        panel.Controls.Add(new Label { Text = "", Height = 10 }, 0, row); row++;
-        panel.Controls.Add(lblLogPath, 0, row); panel.SetColumnSpan(lblLogPath, 3); row++;
+        cardSchedule.Controls.Add(_lblLastPush);
+        cardSchedule.Controls.Add(_lblNextPush);
+        cardSchedule.Controls.Add(lblLogPath);
 
-        page.Controls.Add(panel);
+        var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
+        flow.Controls.Add(card);
+        flow.Controls.Add(cardConn);
+        flow.Controls.Add(cardSchedule);
+        card.Width = cardConn.Width = cardSchedule.Width = 620;
+
+        page.Controls.Add(flow);
     }
 
     private void BuildConfigTab(TabPage page)
@@ -177,11 +214,12 @@ public class FrmMain : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            Padding = new Padding(16),
+            Padding = new Padding(20),
             AutoSize = true,
-            AutoScroll = true
+            AutoScroll = true,
+            BackColor = UiTheme.Background
         };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         void AddRow(string label, Control control)
@@ -189,29 +227,60 @@ public class FrmMain : Form
             var r = panel.RowCount;
             panel.RowCount = r + 1;
             control.Dock = DockStyle.Fill;
-            panel.Controls.Add(new Label { Text = label, AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Left }, 0, r);
+            if (control is TextBox tb)
+            {
+                tb.BorderStyle = BorderStyle.FixedSingle;
+                tb.BackColor = Color.White;
+                tb.Margin = new Padding(0, 4, 0, 4);
+            }
+            panel.Controls.Add(new Label { Text = label, AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Left, ForeColor = UiTheme.TextDark }, 0, r);
             panel.Controls.Add(control, 1, r);
         }
 
-        _txtApiBaseUrl.Width = 320;
-        _txtApiKey.Width = 320;
+        void AddSectionHeader(string text, Color color, bool first = false)
+        {
+            var r = panel.RowCount;
+            panel.RowCount = r + 1;
+            var lbl = new Label
+            {
+                Text = text,
+                AutoSize = true,
+                Font = new Font("Segoe UI", 11f, FontStyle.Bold),
+                ForeColor = color,
+                Margin = new Padding(0, first ? 0 : 22, 0, 8)
+            };
+            panel.Controls.Add(lbl, 0, r);
+            panel.SetColumnSpan(lbl, 2);
+        }
+
+        _txtApiBaseUrl.Width = 380;
+        _txtApiKey.Width = 380;
         _txtApiKey.UseSystemPasswordChar = true;
-        _txtTallyUrl.Width = 320;
-        _txtSalesLedger.Width = 320;
-        _txtIgstLedger.Width = 320;
-        _txtCgstLedger.Width = 320;
-        _txtSgstLedger.Width = 320;
-        _txtRoundOffLedger.Width = 320;
-        _txtVoucherType.Width = 320;
-        _txtBatchName.Width = 320;
+        _txtTallyUrl.Width = 380;
+        _txtSalesLedger.Width = 380;
+        _txtIgstLedger.Width = 380;
+        _txtCgstLedger.Width = 380;
+        _txtSgstLedger.Width = 380;
+        _txtRoundOffLedger.Width = 380;
+        _txtVoucherType.Width = 380;
+        _txtBatchName.Width = 380;
+        _txtSqlConnectionString.Width = 380;
+        _txtSqlConnectionString.UseSystemPasswordChar = true;
+        _txtSqlConnectionString.PlaceholderText = "(not configured yet — groundwork for a later feature)";
 
         _numPushInterval.Minimum = 1;
         _numPushInterval.Maximum = 1440;
         _numPushInterval.Value = 3;
+        _numPushInterval.Width = 100;
 
+        AddSectionHeader("🌐  Sales API", UiTheme.Primary, first: true);
         AddRow("Sales API base URL", _txtApiBaseUrl);
         AddRow("API key", _txtApiKey);
+
+        AddSectionHeader("📇  Tally Connection", UiTheme.Primary);
         AddRow("Local Tally URL", _txtTallyUrl);
+
+        AddSectionHeader("🧾  Ledger Mapping", UiTheme.Primary);
         AddRow("Sales ledger", _txtSalesLedger);
         AddRow("IGST ledger", _txtIgstLedger);
         AddRow("CGST ledger", _txtCgstLedger);
@@ -219,19 +288,44 @@ public class FrmMain : Form
         AddRow("Round off ledger", _txtRoundOffLedger);
         AddRow("Voucher type", _txtVoucherType);
         AddRow("Batch name", _txtBatchName);
+
+        AddSectionHeader("🕐  Schedule && Startup", UiTheme.Primary);
         AddRow("Push interval (min)", _numPushInterval);
         AddRow("Start minimized to tray", _chkStartMinimized);
         AddRow("Start with Windows", _chkAutoStart);
 
-        var btnSave = new Button { Text = "Save && Apply", AutoSize = true };
+        // ── License ──────────────────────────────────────────────────────
+        AddSectionHeader("🔑  License", UiTheme.Warning);
+
+        _lblLicenseKeyMasked.Text = "(none activated)";
+        _lblLicenseKeyMasked.AutoSize = true;
+        _lblLicenseKeyMasked.Font = new Font("Consolas", 9.5f);
+        AddRow("Current key", _lblLicenseKeyMasked);
+
+        _lblLicenseStatus = UiTheme.StatusChip("Unknown", UiTheme.TextMuted);
+        AddRow("Status", _lblLicenseStatus);
+
+        var btnChangeLicense = new Button { Text = "Change License Key", AutoSize = true };
+        UiTheme.StyleButton(btnChangeLicense, UiTheme.Warning);
+        btnChangeLicense.Click += (_, _) => ChangeLicenseClicked();
+        AddRow("", btnChangeLicense);
+
+        // ── Database (groundwork only — see AgentConfig.cs) ────────────────
+        AddSectionHeader("🗄  Database (optional — for a future report-sync feature)", UiTheme.Info);
+        AddRow("SQL connection string", _txtSqlConnectionString);
+
+        var btnSave = new Button { Text = "💾  Save && Apply", AutoSize = true };
+        UiTheme.StyleButton(btnSave, UiTheme.Success);
         btnSave.Click += BtnSaveConfig_Click;
 
         _lblConfigMsg.AutoSize = true;
-        _lblConfigMsg.ForeColor = Color.Green;
+        _lblConfigMsg.ForeColor = UiTheme.Success;
+        _lblConfigMsg.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
 
         var r2 = panel.RowCount;
         panel.RowCount = r2 + 1;
         panel.Controls.Add(btnSave, 1, r2);
+        panel.Controls[panel.Controls.Count - 1].Margin = new Padding(0, 20, 0, 6);
         var r3 = panel.RowCount;
         panel.RowCount = r3 + 1;
         panel.Controls.Add(_lblConfigMsg, 1, r3);
@@ -247,12 +341,19 @@ public class FrmMain : Form
         _txtLogs.Dock = DockStyle.Fill;
         _txtLogs.Font = new Font("Consolas", 9);
         _txtLogs.WordWrap = false;
+        _txtLogs.BackColor = Color.FromArgb(30, 30, 30);
+        _txtLogs.ForeColor = Color.Gainsboro;
+        _txtLogs.BorderStyle = BorderStyle.None;
 
-        var btnClear = new Button { Text = "Clear", Dock = DockStyle.Top, AutoSize = true };
+        var btnClear = new Button { Text = "🗑  Clear", Dock = DockStyle.Top, AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
+        UiTheme.StyleButton(btnClear, UiTheme.TextMuted);
         btnClear.Click += (_, _) => _txtLogs.Clear();
 
-        page.Controls.Add(_txtLogs);
-        page.Controls.Add(btnClear);
+        var wrap = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16), BackColor = UiTheme.Background };
+        wrap.Controls.Add(_txtLogs);
+        wrap.Controls.Add(btnClear);
+
+        page.Controls.Add(wrap);
     }
 
     private void BuildTrayIcon()
@@ -273,7 +374,7 @@ public class FrmMain : Form
     private void RestoreFromTray()
     {
         Show();
-        WindowState = FormWindowState.Normal;
+        WindowState = FormWindowState.Maximized;
         Activate();
     }
 
@@ -309,6 +410,41 @@ public class FrmMain : Form
         _numPushInterval.Value = Math.Clamp(_config.PushIntervalMinutes, 1, 1440);
         _chkStartMinimized.Checked = _config.StartMinimized;
         _chkAutoStart.Checked = _config.AutoStartWithWindows;
+        _txtSqlConnectionString.Text = ConfigService.Unprotect(_config.SqlConnectionStringProtected);
+
+        RefreshLicenseDisplay();
+    }
+
+    private void RefreshLicenseDisplay()
+    {
+        var key = LicenseService.GetLicenseKey(_config);
+        _lblLicenseKeyMasked.Text = string.IsNullOrEmpty(key) ? "(none activated)" : LicenseKeyMask.Mask(key);
+
+        _ = RefreshLicenseStatusAsync();
+    }
+
+    private async Task RefreshLicenseStatusAsync()
+    {
+        var result = await _licenseSvc.CheckAsync(_config);
+        if (InvokeRequired) { BeginInvoke(() => ApplyLicenseStatus(result)); return; }
+        ApplyLicenseStatus(result);
+    }
+
+    private void ApplyLicenseStatus(LicenseValidationResult result)
+    {
+        var color = result.IsValid ? UiTheme.Success : UiTheme.Danger;
+        var text = result.IsValid
+            ? (result.IsTrial ? "Trial" : "Licensed") + (result.ExpiresOn.HasValue ? $" — expires {result.ExpiresOn.Value:dd MMM yyyy}" : "")
+            : result.Message;
+        _lblLicenseStatus.ForeColor = color;
+        _lblLicenseStatus.Text = "● " + text;
+    }
+
+    private void ChangeLicenseClicked()
+    {
+        using var frm = new FrmLicense(_licenseSvc, _config);
+        frm.ShowDialog(this);
+        RefreshLicenseDisplay();
     }
 
     private void BtnSaveConfig_Click(object? sender, EventArgs e)
@@ -326,16 +462,18 @@ public class FrmMain : Form
         _config.PushIntervalMinutes = (int)_numPushInterval.Value;
         _config.StartMinimized = _chkStartMinimized.Checked;
         _config.AutoStartWithWindows = _chkAutoStart.Checked;
+        _config.SqlConnectionStringProtected = ConfigService.Protect(_txtSqlConnectionString.Text.Trim());
 
         _configSvc.Save(_config);
         SetAutoStart(_config.AutoStartWithWindows);
 
         _orchestrator.Stop();
         _orchestrator.Start(_config);
-        _btnStartStop.Text = "Stop Agent";
+        _btnStartStop.Text = "⏹  Stop Agent";
+        UiTheme.StyleButton(_btnStartStop, UiTheme.Danger);
 
-        _lblConfigMsg.ForeColor = Color.Green;
-        _lblConfigMsg.Text = $"Saved and applied at {DateTime.Now:HH:mm:ss}.";
+        _lblConfigMsg.ForeColor = UiTheme.Success;
+        _lblConfigMsg.Text = $"✓ Saved and applied at {DateTime.Now:HH:mm:ss}.";
         _logger.Info("Configuration saved and agent restarted with new settings.");
     }
 
@@ -344,12 +482,14 @@ public class FrmMain : Form
         if (_orchestrator.IsRunning)
         {
             _orchestrator.Stop();
-            _btnStartStop.Text = "Start Agent";
+            _btnStartStop.Text = "▶  Start Agent";
+            UiTheme.StyleButton(_btnStartStop, UiTheme.Success);
         }
         else
         {
             _orchestrator.Start(_config);
-            _btnStartStop.Text = "Stop Agent";
+            _btnStartStop.Text = "⏹  Stop Agent";
+            UiTheme.StyleButton(_btnStartStop, UiTheme.Danger);
         }
     }
 
@@ -364,16 +504,16 @@ public class FrmMain : Form
     {
         var cfg = CurrentFormConfig();
         var (ok, msg) = await _orchestrator.TestApiAsync(cfg);
-        _lblApiStatus.Text = $"API: {(ok ? "connected" : "failed")} — {msg}";
-        _lblApiStatus.ForeColor = ok ? Color.Green : Color.Red;
+        _lblApiStatus.Text = $"● API: {(ok ? "connected" : "failed")} — {msg}";
+        _lblApiStatus.ForeColor = ok ? UiTheme.Success : UiTheme.Danger;
     }
 
     private async Task TestTallyClicked()
     {
         var cfg = CurrentFormConfig();
         var (ok, msg) = await _orchestrator.TestTallyAsync(cfg);
-        _lblTallyStatus.Text = $"Tally: {(ok ? "reachable" : "unreachable")} — {msg}";
-        _lblTallyStatus.ForeColor = ok ? Color.Green : Color.Red;
+        _lblTallyStatus.Text = $"● Tally: {(ok ? "reachable" : "unreachable")} — {msg}";
+        _lblTallyStatus.ForeColor = ok ? UiTheme.Success : UiTheme.Danger;
     }
 
     // Builds a config snapshot from whatever's currently typed in the
@@ -390,7 +530,9 @@ public class FrmMain : Form
     {
         if (InvokeRequired) { BeginInvoke(() => UpdateStatus(e)); return; }
 
-        _lblRunState.Text = e.IsSyncing ? "Agent: syncing…" : (_orchestrator.IsRunning ? "Agent: running" : "Agent: stopped");
+        var running = _orchestrator.IsRunning;
+        _lblRunState.Text = "● " + (e.IsSyncing ? "Agent: syncing…" : (running ? "Agent: running" : "Agent: stopped"));
+        _lblRunState.ForeColor = e.IsSyncing ? UiTheme.Warning : (running ? UiTheme.Success : UiTheme.Danger);
         _lblLastPush.Text = "Last push cycle: " + (e.LastPushCycleAt?.ToString("dd MMM, HH:mm:ss") ?? "never");
         _lblNextPush.Text = "Next push cycle: " + (e.NextPushCycleAt?.ToString("dd MMM, HH:mm:ss") ?? "—");
     }
