@@ -256,6 +256,100 @@ public class AdminController : Controller
         return RedirectToAction("Users");
     }
 
+    // Signup Requests — see SignupRequest for the why. Approving here is the
+    // only place a self-signup actually turns into a real AppUser login.
+    private const string DefaultSignupPassword = "Welcome@123";
+
+    public async Task<IActionResult> SignupRequests()
+    {
+        var requests = await _db.SignupRequests
+            .Include(r => r.RequestedCompany)
+            .Include(r => r.ReviewedBy)
+            .OrderBy(r => r.Status) // Pending (0) first
+            .ThenByDescending(r => r.RequestedAt)
+            .Select(r => new SignupRequestListVM
+            {
+                SignupRequestId = r.SignupRequestId,
+                FullName = r.FullName,
+                Email = r.Email,
+                PhoneNumber = r.PhoneNumber,
+                RequestedCompanyName = r.RequestedCompany!.CompanyName,
+                Status = r.Status,
+                RequestedAt = r.RequestedAt,
+                ReviewedAt = r.ReviewedAt,
+                ReviewedByName = r.ReviewedBy != null ? r.ReviewedBy.FullName : null,
+                RejectionReason = r.RejectionReason
+            })
+            .ToListAsync();
+
+        return View(requests);
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> ApproveSignup(int id, string role)
+    {
+        var request = await _db.SignupRequests.FindAsync(id);
+        if (request == null) return NotFound();
+        if (request.Status != SignupRequestStatus.Pending)
+        {
+            TempData["Error"] = "This request has already been reviewed.";
+            return RedirectToAction(nameof(SignupRequests));
+        }
+
+        var admin = await _userManager.GetUserAsync(User);
+
+        var user = new AppUser
+        {
+            FullName = request.FullName,
+            Email = request.Email,
+            UserName = request.Email,
+            PhoneNumber = request.PhoneNumber,
+            CompanyId = request.RequestedCompanyId,
+            Role = role
+        };
+
+        var result = await _userManager.CreateAsync(user, DefaultSignupPassword);
+        if (!result.Succeeded)
+        {
+            TempData["Error"] = string.Join(" ", result.Errors.Select(e => e.Description));
+            return RedirectToAction(nameof(SignupRequests));
+        }
+
+        await _userManager.AddToRoleAsync(user, role);
+        _db.UserCompanies.Add(new UserCompany { UserId = user.Id, CompanyId = request.RequestedCompanyId });
+
+        request.Status = SignupRequestStatus.Approved;
+        request.ReviewedAt = DateTime.Now;
+        request.ReviewedById = admin?.Id;
+        await _db.SaveChangesAsync();
+
+        TempData["Success"] = $"{request.FullName} approved — login: {request.Email} / default password: {DefaultSignupPassword} " +
+            "(share this with the user; more companies or a different password can be set from Edit User).";
+        return RedirectToAction(nameof(SignupRequests));
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> RejectSignup(int id, string? reason)
+    {
+        var request = await _db.SignupRequests.FindAsync(id);
+        if (request == null) return NotFound();
+        if (request.Status != SignupRequestStatus.Pending)
+        {
+            TempData["Error"] = "This request has already been reviewed.";
+            return RedirectToAction(nameof(SignupRequests));
+        }
+
+        var admin = await _userManager.GetUserAsync(User);
+        request.Status = SignupRequestStatus.Rejected;
+        request.ReviewedAt = DateTime.Now;
+        request.ReviewedById = admin?.Id;
+        request.RejectionReason = reason;
+        await _db.SaveChangesAsync();
+
+        TempData["Success"] = $"Signup request from {request.FullName} rejected.";
+        return RedirectToAction(nameof(SignupRequests));
+    }
+
     // Role Rights
     [HttpGet]
     public async Task<IActionResult> RoleRights()

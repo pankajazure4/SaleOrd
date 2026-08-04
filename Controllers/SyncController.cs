@@ -143,13 +143,13 @@ public class SyncController : Controller
                 // itself with a memory access violation on a client install.
                 var ledgers = await _tally.GetLedgersAsync(tallyUrl, company);
                 await Task.Delay(500);
-                var items = await _tally.GetStockItemsAsync(tallyUrl, company);
+                var (items, taxSlabRecords) = await _tally.GetStockItemsAsync(tallyUrl, company);
                 await Task.Delay(500);
                 var godowns = await _tally.GetGodownsAsync(tallyUrl, company);
                 await Task.Delay(500);
 
                 await UpsertLedgersAsync(company.CompanyId, ledgers);
-                await UpsertItemsAsync(company.CompanyId, items);
+                await UpsertItemsAsync(company.CompanyId, items, taxSlabRecords);
                 await UpsertGodownsAsync(company.CompanyId, godowns);
 
                 var (vNew, vUpd, vMode) = await _voucherSync.SyncCompanyAsync(_db, _tally, tallyUrl, company);
@@ -319,7 +319,7 @@ public class SyncController : Controller
         await _db.SaveChangesAsync();
     }
 
-    private async Task UpsertItemsAsync(int companyId, List<StockItem> items)
+    private async Task UpsertItemsAsync(int companyId, List<StockItem> items, List<TallyService.StockItemTaxSlabRecord> taxSlabRecords)
     {
         var incoming = DeduplicateByName(items, s => s.ItemName, s => s.ItemName = NormalizeName(s.ItemName))
             .Select(s =>
@@ -357,6 +357,49 @@ public class SyncController : Controller
             {
                 _db.StockItems.Add(item);
                 existing[item.ItemName] = item;
+            }
+        }
+
+        await _db.SaveChangesAsync();
+
+        await SyncStockItemTaxSlabsAsync(taxSlabRecords, existing);
+    }
+
+    // Full-replace: every item's slab set is dropped and reinserted from the
+    // latest Tally data each sync — see MasterSyncJob's copy of this method
+    // for the fuller reasoning.
+    private async Task SyncStockItemTaxSlabsAsync(List<TallyService.StockItemTaxSlabRecord> taxSlabs, Dictionary<string, StockItem> itemsByName)
+    {
+        if (taxSlabs.Count == 0) return;
+
+        var itemIds = taxSlabs
+            .Select(t => NormalizeName(t.ItemName))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(itemsByName.ContainsKey)
+            .Select(n => itemsByName[n].StockItemId)
+            .ToList();
+
+        var existingSlabs = await _db.StockItemTaxSlabs
+            .Where(t => itemIds.Contains(t.StockItemId))
+            .ToListAsync();
+        _db.StockItemTaxSlabs.RemoveRange(existingSlabs);
+
+        foreach (var group in taxSlabs.GroupBy(t => NormalizeName(t.ItemName), StringComparer.OrdinalIgnoreCase))
+        {
+            if (!itemsByName.TryGetValue(group.Key, out var item)) continue;
+            foreach (var slab in group)
+            {
+                _db.StockItemTaxSlabs.Add(new StockItemTaxSlab
+                {
+                    StockItemId    = item.StockItemId,
+                    CompanyId      = item.CompanyId,
+                    ApplicableFrom = slab.ApplicableFrom,
+                    CGSTRate       = slab.CGSTRate,
+                    SGSTRate       = slab.SGSTRate,
+                    IGSTRate       = slab.IGSTRate,
+                    CessRate       = slab.CessRate,
+                    StateCessRate  = slab.StateCessRate
+                });
             }
         }
 

@@ -215,15 +215,8 @@ public class SaleOrderController : Controller
             CreatedByName= user.FullName,
             CreatedAt    = createdAt,
             EditDeadline = editDeadline,
-            TaxType      = model.TaxType,
-            TaxPercent   = model.TaxPercent,
-            TaxTotal     = model.TaxTotal,
-            RoundOff     = model.RoundOff,
-            GrandTotal   = model.GrandTotal > 0 ? model.GrandTotal : 0
+            TaxType      = model.TaxType
         };
-
-        // Calculate IGST / CGST+SGST split
-        ApplyTaxSplit(order);
 
         var defaultGodown = await GetDefaultGodownAsync(companyId);
 
@@ -233,7 +226,7 @@ public class SaleOrderController : Controller
             if (stockItem == null) continue;
 
             var amount = item.Qty * item.Rate * (1 - item.Discount / 100);
-            order.Items.Add(new SaleOrderItem
+            var soItem = new SaleOrderItem
             {
                 StockItemId = item.StockItemId,
                 ItemName    = stockItem.ItemName,
@@ -241,14 +234,16 @@ public class SaleOrderController : Controller
                 Qty         = item.Qty,
                 Rate        = item.Rate,
                 Discount    = item.Discount,
-                Amount      = Math.Round(amount, 2),
+                Amount      = Math.Round(amount, 2, MidpointRounding.AwayFromZero),
                 GodownId    = defaultGodown?.GodownId,
                 GodownName  = defaultGodown?.GodownName
-            });
+            };
+            await ApplyItemTaxAsync(soItem, companyId, order.TaxType, order.OrderDate);
+            order.Items.Add(soItem);
         }
 
         order.TotalAmount = order.Items.Sum(i => i.Amount);
-        if (order.GrandTotal == 0) order.GrandTotal = order.TotalAmount + order.TaxTotal + order.RoundOff;
+        ComputeOrderTaxFromItems(order);
 
         _db.SaleOrders.Add(order);
         await _db.SaveChangesAsync();
@@ -395,7 +390,10 @@ public class SaleOrderController : Controller
                 Discount    = i.Discount,
                 Amount      = i.Amount,
                 GodownId    = i.GodownId,
-                GodownName  = i.GodownName
+                GodownName  = i.GodownName,
+                CGSTRate    = i.CGSTRate,
+                SGSTRate    = i.SGSTRate,
+                IGSTRate    = i.IGSTRate
             }).ToList()
         };
 
@@ -477,11 +475,6 @@ public class SaleOrderController : Controller
         order.LedgerName   = ledger.LedgerName;
         order.Narration    = model.Narration;
         order.TaxType      = model.TaxType;
-        order.TaxPercent   = model.TaxPercent;
-        order.TaxTotal     = model.TaxTotal;
-        order.RoundOff     = model.RoundOff;
-        order.GrandTotal   = model.GrandTotal > 0 ? model.GrandTotal : 0;
-        ApplyTaxSplit(order);
 
         // Reset to Pending so Tally job retries it
         order.Status    = OrderStatus.Pending;
@@ -498,7 +491,7 @@ public class SaleOrderController : Controller
             if (stockItem == null) continue;
 
             var amount = item.Qty * item.Rate * (1 - item.Discount / 100);
-            order.Items.Add(new SaleOrderItem
+            var soItem = new SaleOrderItem
             {
                 StockItemId = item.StockItemId,
                 ItemName    = stockItem.ItemName,
@@ -506,14 +499,16 @@ public class SaleOrderController : Controller
                 Qty         = item.Qty,
                 Rate        = item.Rate,
                 Discount    = item.Discount,
-                Amount      = Math.Round(amount, 2),
+                Amount      = Math.Round(amount, 2, MidpointRounding.AwayFromZero),
                 GodownId    = defaultGodown?.GodownId,
                 GodownName  = defaultGodown?.GodownName
-            });
+            };
+            await ApplyItemTaxAsync(soItem, companyId, order.TaxType, order.OrderDate);
+            order.Items.Add(soItem);
         }
 
         order.TotalAmount = order.Items.Sum(i => i.Amount);
-        if (order.GrandTotal == 0) order.GrandTotal = order.TotalAmount + order.TaxTotal + order.RoundOff;
+        ComputeOrderTaxFromItems(order);
 
         await _db.SaveChangesAsync();
 
@@ -578,12 +573,17 @@ public class SaleOrderController : Controller
         return View(order);
     }
 
-    // Returns customer-wise last rate for an item, falls back to item master rate
+    // Returns customer-wise last rate for an item (falls back to item master
+    // rate), plus its current GST% breakdown — used for the live total
+    // preview while building an order; the server recomputes authoritatively
+    // from the same StockItemTaxSlabs at save time regardless of this.
     [HttpGet]
-    public async Task<IActionResult> GetItemRate(int stockItemId, int ledgerId)
+    public async Task<IActionResult> GetItemRate(int stockItemId, int ledgerId, DateTime? orderDate = null)
     {
         var (companyId, user) = await _resolver.ResolveAsync();
         if (user == null) return Unauthorized();
+
+        var (cgst, sgst, igst) = await GetEffectiveTaxRatesAsync(companyId, stockItemId, orderDate ?? DateTime.Today);
 
         // Customer+Item last sale rate, pulled from Tally's actual Sales
         // vouchers (VoucherInventoryEntries — full line-level sync, not just
@@ -597,7 +597,7 @@ public class SaleOrderController : Controller
             .FirstOrDefaultAsync();
 
         if (tallyRate.HasValue)
-            return Json(new { rate = tallyRate.Value, source = "tally" });
+            return Json(new { rate = tallyRate.Value, source = "tally", cgstRate = cgst, sgstRate = sgst, igstRate = igst });
 
         // Fall back to this customer's last rate from orders placed in-app
         // (covers a new SO rate before the next Tally sync pulls it back).
@@ -609,7 +609,7 @@ public class SaleOrderController : Controller
             .FirstOrDefaultAsync();
 
         if (lastRate.HasValue)
-            return Json(new { rate = lastRate.Value, source = "customer" });
+            return Json(new { rate = lastRate.Value, source = "customer", cgstRate = cgst, sgstRate = sgst, igstRate = igst });
 
         // Fall back to item master rate
         var masterRate = await _db.StockItems
@@ -617,7 +617,7 @@ public class SaleOrderController : Controller
             .Select(s => (decimal?)s.Rate)
             .FirstOrDefaultAsync();
 
-        return Json(new { rate = masterRate ?? 0, source = "master" });
+        return Json(new { rate = masterRate ?? 0, source = "master", cgstRate = cgst, sgstRate = sgst, igstRate = igst });
     }
 
     [HttpGet]
@@ -699,10 +699,11 @@ public class SaleOrderController : Controller
 
     private async Task LoadTaxSettingsAsync()
     {
-        var taxType    = (await _db.AppSettings.FirstOrDefaultAsync(s => s.Key == "DefaultTaxType"))?.Value ?? "None";
-        var taxPercent = (await _db.AppSettings.FirstOrDefaultAsync(s => s.Key == "DefaultTaxPercent"))?.Value ?? "0";
-        ViewBag.DefaultTaxType    = taxType;
-        ViewBag.DefaultTaxPercent = decimal.TryParse(taxPercent, out var p) ? p : 0;
+        // Only the interstate/intrastate choice is a setting now — the %
+        // itself comes from each item's own StockItemTaxSlabs, not a flat
+        // admin-entered rate (see ApplyItemTaxAsync/GetEffectiveTaxRatesAsync).
+        var taxType = (await _db.AppSettings.FirstOrDefaultAsync(s => s.Key == "DefaultTaxType"))?.Value ?? "None";
+        ViewBag.DefaultTaxType = taxType;
     }
 
     private async Task<DateTime?> CalcEditDeadlineAsync(DateTime createdAt)
@@ -718,25 +719,67 @@ public class SaleOrderController : Controller
         return createdAt < cutoffToday ? cutoffToday : createdAt.Date.AddDays(1).AddHours(cutoffHour);
     }
 
-    private static void ApplyTaxSplit(SaleOrder order)
+    // Picks the latest StockItemTaxSlab whose ApplicableFrom <= asOfDate —
+    // Tally's GST% on an item changes over time via rate notifications, so
+    // this is the item's actual rate on the order date, not just whatever's
+    // "current" today. Returns all-zero if the item has no slab yet (not
+    // synced, or genuinely has no GST configured in Tally).
+    private async Task<(decimal CGST, decimal SGST, decimal IGST)> GetEffectiveTaxRatesAsync(
+        int companyId, int stockItemId, DateTime asOfDate)
     {
-        if (order.TaxType == "IGST")
+        var slab = await _db.StockItemTaxSlabs
+            .Where(t => t.StockItemId == stockItemId && t.CompanyId == companyId && t.ApplicableFrom <= asOfDate)
+            .OrderByDescending(t => t.ApplicableFrom)
+            .FirstOrDefaultAsync();
+
+        return slab == null ? (0, 0, 0) : (slab.CGSTRate, slab.SGSTRate, slab.IGSTRate);
+    }
+
+    // Resolves and stamps one line's tax snapshot — which duty heads apply
+    // depends on TaxType (IGST for interstate, CGST+SGST for intrastate;
+    // still an admin-picked setting, not auto-derived from party/company
+    // state), but the % itself always comes from the item's own master data.
+    private async Task ApplyItemTaxAsync(SaleOrderItem item, int companyId, string taxType, DateTime orderDate)
+    {
+        var (cgst, sgst, igst) = await GetEffectiveTaxRatesAsync(companyId, item.StockItemId, orderDate);
+
+        item.CGSTRate = 0; item.SGSTRate = 0; item.IGSTRate = 0;
+        item.CGSTAmount = 0; item.SGSTAmount = 0; item.IGSTAmount = 0;
+
+        // AwayFromZero, not .NET's default banker's rounding — Tally rounds
+        // each duty head's tax the ordinary way (e.g. 5.225 -> 5.23), and a
+        // silent mismatch here (5.225 -> 5.22 under ToEven) is exactly what
+        // produced the 2-paisa gap between "As per Transaction" and "As per
+        // Calculation" on Tally's own GST Tax Analysis report.
+        if (taxType == "IGST")
         {
-            order.IGSTTotal = order.TaxTotal;
-            order.CGSTTotal = 0;
-            order.SGSTTotal = 0;
+            item.IGSTRate = igst;
+            item.IGSTAmount = Math.Round(item.Amount * igst / 100, 2, MidpointRounding.AwayFromZero);
         }
-        else if (order.TaxType == "CGST_SGST")
+        else if (taxType == "CGST_SGST")
         {
-            order.IGSTTotal = 0;
-            order.CGSTTotal = Math.Round(order.TaxTotal / 2, 2);
-            order.SGSTTotal = order.TaxTotal - order.CGSTTotal;
+            item.CGSTRate = cgst;
+            item.SGSTRate = sgst;
+            item.CGSTAmount = Math.Round(item.Amount * cgst / 100, 2, MidpointRounding.AwayFromZero);
+            item.SGSTAmount = Math.Round(item.Amount * sgst / 100, 2, MidpointRounding.AwayFromZero);
         }
-        else
-        {
-            order.IGSTTotal = 0;
-            order.CGSTTotal = 0;
-            order.SGSTTotal = 0;
-        }
+    }
+
+    // Order-level totals are always a sum of the (already tax-stamped) line
+    // items — never trusted from the client — plus a round-off to the
+    // nearest rupee. TaxPercent is kept only as an informational effective
+    // rate for display; it no longer drives the calculation.
+    private static void ComputeOrderTaxFromItems(SaleOrder order)
+    {
+        order.CGSTTotal = Math.Round(order.Items.Sum(i => i.CGSTAmount), 2, MidpointRounding.AwayFromZero);
+        order.SGSTTotal = Math.Round(order.Items.Sum(i => i.SGSTAmount), 2, MidpointRounding.AwayFromZero);
+        order.IGSTTotal = Math.Round(order.Items.Sum(i => i.IGSTAmount), 2, MidpointRounding.AwayFromZero);
+        order.TaxTotal  = order.CGSTTotal + order.SGSTTotal + order.IGSTTotal;
+        order.TaxPercent = order.TotalAmount > 0 ? Math.Round(order.TaxTotal / order.TotalAmount * 100, 2, MidpointRounding.AwayFromZero) : 0;
+
+        var subtotalPlusTax = order.TotalAmount + order.TaxTotal;
+        var roundedGrand = Math.Round(subtotalPlusTax, 0, MidpointRounding.AwayFromZero);
+        order.RoundOff   = Math.Round(roundedGrand - subtotalPlusTax, 2, MidpointRounding.AwayFromZero);
+        order.GrandTotal = roundedGrand;
     }
 }

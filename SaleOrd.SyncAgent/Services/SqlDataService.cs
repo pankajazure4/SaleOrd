@@ -202,6 +202,58 @@ public class SqlDataService
         return (added, updated);
     }
 
+    // Full-replace: every item's slab set is dropped and reinserted from the
+    // latest Tally data each sync — an item's GST history is small (a
+    // handful of rate-notification dates), so this is cheap and avoids
+    // reconciling individual slab rows. Must run after UpsertStockItemsAsync
+    // so StockItemIds exist for any newly-added items.
+    public async Task UpsertStockItemTaxSlabsAsync(
+        string connString, int companyId, List<TallyService.StockItemTaxSlabRecord> taxSlabs)
+    {
+        if (taxSlabs.Count == 0) return;
+
+        using var conn = new SqlConnection(connString);
+        await conn.OpenAsync();
+
+        var itemIds = (await conn.QueryAsync<(int StockItemId, string ItemName)>(
+                "SELECT StockItemId, ItemName FROM StockItems WHERE CompanyId = @CompanyId", new { CompanyId = companyId }))
+            .GroupBy(s => Normalize(s.ItemName), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Last().StockItemId, StringComparer.OrdinalIgnoreCase);
+
+        using var tx = conn.BeginTransaction();
+
+        foreach (var group in taxSlabs.GroupBy(t => Normalize(t.ItemName), StringComparer.OrdinalIgnoreCase))
+        {
+            if (!itemIds.TryGetValue(group.Key, out var stockItemId)) continue;
+
+            await conn.ExecuteAsync(
+                "DELETE FROM StockItemTaxSlabs WHERE StockItemId = @StockItemId",
+                new { StockItemId = stockItemId }, tx);
+
+            foreach (var slab in group)
+            {
+                await conn.ExecuteAsync(@"
+                    INSERT INTO StockItemTaxSlabs
+                        (StockItemId, CompanyId, ApplicableFrom, CGSTRate, SGSTRate, IGSTRate, CessRate, StateCessRate)
+                    VALUES
+                        (@StockItemId, @CompanyId, @ApplicableFrom, @CGSTRate, @SGSTRate, @IGSTRate, @CessRate, @StateCessRate)",
+                    new
+                    {
+                        StockItemId = stockItemId,
+                        CompanyId = companyId,
+                        slab.ApplicableFrom,
+                        slab.CGSTRate,
+                        slab.SGSTRate,
+                        slab.IGSTRate,
+                        slab.CessRate,
+                        slab.StateCessRate
+                    }, tx);
+            }
+        }
+
+        tx.Commit();
+    }
+
     public async Task<(int Added, int Updated)> UpsertGodownsAsync(string connString, int companyId, List<Godown> incoming)
     {
         using var conn = new SqlConnection(connString);

@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SaleOrd.Data;
 
@@ -11,9 +12,11 @@ using SaleOrd.Data;
 namespace SaleOrd.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260730061549_AddStockItemTaxSlabsAndLineTax")]
+    partial class AddStockItemTaxSlabsAndLineTax
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -683,52 +686,6 @@ namespace SaleOrd.Migrations
                     b.ToTable("SaleOrderItems");
                 });
 
-            modelBuilder.Entity("SaleOrd.Models.Domain.SignupRequest", b =>
-                {
-                    b.Property<int>("SignupRequestId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("SignupRequestId"));
-
-                    b.Property<string>("Email")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("FullName")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("PhoneNumber")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("RejectionReason")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<DateTime>("RequestedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int>("RequestedCompanyId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("ReviewedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("ReviewedById")
-                        .HasColumnType("nvarchar(450)");
-
-                    b.Property<int>("Status")
-                        .HasColumnType("int");
-
-                    b.HasKey("SignupRequestId");
-
-                    b.HasIndex("RequestedCompanyId");
-
-                    b.HasIndex("ReviewedById");
-
-                    b.ToTable("SignupRequests");
-                });
-
             modelBuilder.Entity("SaleOrd.Models.Domain.StockItem", b =>
                 {
                     b.Property<int>("StockItemId")
@@ -1197,24 +1154,6 @@ namespace SaleOrd.Migrations
                     b.Navigation("SaleOrder");
 
                     b.Navigation("StockItem");
-                });
-
-            modelBuilder.Entity("SaleOrd.Models.Domain.SignupRequest", b =>
-                {
-                    b.HasOne("SaleOrd.Models.Domain.Company", "RequestedCompany")
-                        .WithMany()
-                        .HasForeignKey("RequestedCompanyId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("SaleOrd.Models.Domain.AppUser", "ReviewedBy")
-                        .WithMany()
-                        .HasForeignKey("ReviewedById")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.Navigation("RequestedCompany");
-
-                    b.Navigation("ReviewedBy");
                 });
 
             modelBuilder.Entity("SaleOrd.Models.Domain.StockItem", b =>

@@ -1,4 +1,6 @@
 @inject SaleOrd.Services.PermissionService _permSvc
+@inject SaleOrd.Data.AppDbContext _db
+@using Microsoft.EntityFrameworkCore
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -166,6 +168,7 @@
 
         @if (User.IsInRole("Admin"))
         {
+            var _pendingSignups = await _db.SignupRequests.CountAsync(r => r.Status == SaleOrd.Models.Domain.SignupRequestStatus.Pending);
             <div class="sidebar-section">
                 <div class="sidebar-label">Admin</div>
                 <a href="/Admin/Companies" class="sidebar-link @(activePage == "Companies" ? "active" : "")">
@@ -173,6 +176,13 @@
                 </a>
                 <a href="/Admin/Users" class="sidebar-link @(activePage == "Users" ? "active" : "")">
                     <i class="bi bi-people-fill"></i>Users
+                </a>
+                <a href="/Admin/SignupRequests" class="sidebar-link @(activePage == "SignupRequests" ? "active" : "")">
+                    <i class="bi bi-person-plus"></i>Signup Requests
+                    @if (_pendingSignups > 0)
+                    {
+                        <span class="badge bg-danger ms-1">@_pendingSignups</span>
+                    }
                 </a>
                 <a href="/Admin/RoleRights" class="sidebar-link @(activePage == "RoleRights" ? "active" : "")">
                     <i class="bi bi-shield-lock"></i>Role Rights

@@ -134,11 +134,7 @@
                                     }
                                 }
                             </select>
-                        </div>
-                        <div class="col-6">
-                            <label class="form-label small fw-semibold">Default Tax %</label>
-                            <input type="number" name="defaultTaxPercent" class="form-control form-control-sm text-end"
-                                   min="0" max="100" step="0.01" value="@ViewBag.DefaultTaxPercent" />
+                            <div class="text-muted" style="font-size:11px">Whether orders use IGST or CGST+SGST — the % itself always comes from each item's own Tally GST master data, not a flat rate here.</div>
                         </div>
                         <div class="col-6">
                             <label class="form-label small fw-semibold">Sales Ledger Name</label>

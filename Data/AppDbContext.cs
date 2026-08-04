@@ -21,6 +21,8 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<UserActivity> UserActivities { get; set; }
     public DbSet<LastSaleRate> LastSaleRates { get; set; }
     public DbSet<VoucherInventoryEntry> VoucherInventoryEntries { get; set; }
+    public DbSet<StockItemTaxSlab> StockItemTaxSlabs { get; set; }
+    public DbSet<SignupRequest> SignupRequests { get; set; }
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -209,5 +211,47 @@ public class AppDbContext : IdentityDbContext<AppUser>
             .WithMany()
             .HasForeignKey(v => v.StockItemId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        builder.Entity<StockItemTaxSlab>()
+            .HasIndex(t => new { t.StockItemId, t.ApplicableFrom });
+        builder.Entity<StockItemTaxSlab>()
+            .Property(t => t.CGSTRate).HasPrecision(9, 3);
+        builder.Entity<StockItemTaxSlab>()
+            .Property(t => t.SGSTRate).HasPrecision(9, 3);
+        builder.Entity<StockItemTaxSlab>()
+            .Property(t => t.IGSTRate).HasPrecision(9, 3);
+        builder.Entity<StockItemTaxSlab>()
+            .Property(t => t.CessRate).HasPrecision(9, 3);
+        builder.Entity<StockItemTaxSlab>()
+            .Property(t => t.StateCessRate).HasPrecision(9, 3);
+        builder.Entity<StockItemTaxSlab>()
+            .HasOne(t => t.StockItem)
+            .WithMany()
+            .HasForeignKey(t => t.StockItemId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.Entity<SignupRequest>()
+            .HasOne(s => s.RequestedCompany)
+            .WithMany()
+            .HasForeignKey(s => s.RequestedCompanyId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.Entity<SignupRequest>()
+            .HasOne(s => s.ReviewedBy)
+            .WithMany()
+            .HasForeignKey(s => s.ReviewedById)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.Entity<SaleOrderItem>()
+            .Property(i => i.CGSTRate).HasPrecision(9, 3);
+        builder.Entity<SaleOrderItem>()
+            .Property(i => i.SGSTRate).HasPrecision(9, 3);
+        builder.Entity<SaleOrderItem>()
+            .Property(i => i.IGSTRate).HasPrecision(9, 3);
+        builder.Entity<SaleOrderItem>()
+            .Property(i => i.CGSTAmount).HasPrecision(18, 2);
+        builder.Entity<SaleOrderItem>()
+            .Property(i => i.SGSTAmount).HasPrecision(18, 2);
+        builder.Entity<SaleOrderItem>()
+            .Property(i => i.IGSTAmount).HasPrecision(18, 2);
     }
 }

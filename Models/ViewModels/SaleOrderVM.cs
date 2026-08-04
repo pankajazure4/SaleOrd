@@ -37,6 +37,15 @@ public class SaleOrderItemVM
     public decimal Amount { get; set; }
     public int? GodownId { get; set; }
     public string? GodownName { get; set; }
+
+    // Display-only — the server always recomputes these from the item's own
+    // StockItemTaxSlabs on save, never trusts what's posted here. Carried on
+    // the VM purely so the Edit screen's live total preview shows an
+    // existing order's saved rates immediately, without an extra round trip
+    // per line to re-fetch them.
+    public decimal CGSTRate { get; set; }
+    public decimal SGSTRate { get; set; }
+    public decimal IGSTRate { get; set; }
 }
 
 public class SaleOrderListVM

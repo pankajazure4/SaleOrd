@@ -183,7 +183,24 @@ public class TallyService
         return null;
     }
 
-    public async Task<List<StockItem>> GetStockItemsAsync(string tallyUrl, Company company)
+    // A stock item's GST% is date-slabbed in Tally (rate notifications change
+    // it over time) — GSTDETAILS.List carries the full dated history, unlike
+    // the single-value RateOfDuty field. Keyed by item name here since these
+    // records exist before the item's own StockItemId is assigned; the
+    // caller resolves that during upsert.
+    public class StockItemTaxSlabRecord
+    {
+        public string ItemName { get; set; } = "";
+        public DateTime ApplicableFrom { get; set; }
+        public decimal CGSTRate { get; set; }
+        public decimal SGSTRate { get; set; }
+        public decimal IGSTRate { get; set; }
+        public decimal CessRate { get; set; }
+        public decimal StateCessRate { get; set; }
+    }
+
+    public async Task<(List<StockItem> Items, List<StockItemTaxSlabRecord> TaxSlabs)> GetStockItemsAsync(
+        string tallyUrl, Company company)
     {
         var xml = $@"<ENVELOPE>
     <HEADER>
@@ -204,7 +221,8 @@ public class TallyService
                         <TYPE>Stock Item</TYPE>
                         <FETCH>Name,Parent,GUID,AlterId,BaseUnits,AdditionalUnits,
                                _Conversion,RateOfDuty,OpeningBalance,ClosingBalance,
-                               OpeningValue,ClosingValue,IsBatchwiseOn,IsCostTrackingOn</FETCH>
+                               OpeningValue,ClosingValue,IsBatchwiseOn,IsCostTrackingOn,
+                               GSTDetails</FETCH>
                     </COLLECTION>
                 </TDLMESSAGE>
             </TDL>
@@ -213,13 +231,20 @@ public class TallyService
 </ENVELOPE>";
 
         var doc = await PostXmlAsync(tallyUrl, xml);
-        if (doc == null) return new();
+        if (doc == null) return (new(), new());
 
         var now = DateTime.Now;
-        return doc.Descendants("STOCKITEM")
-            .Select(el => new StockItem
+        var items = new List<StockItem>();
+        var taxSlabs = new List<StockItemTaxSlabRecord>();
+
+        foreach (var el in doc.Descendants("STOCKITEM"))
+        {
+            var itemName = GetName(el);
+            if (string.IsNullOrWhiteSpace(itemName)) continue;
+
+            items.Add(new StockItem
             {
-                ItemName        = GetName(el),
+                ItemName        = itemName,
                 Parent          = el.Element("PARENT")?.Value?.Trim() ?? string.Empty,
                 UOM             = el.Element("BASEUNITS")?.Value?.Trim() ?? string.Empty,
                 AdditionalUnits = el.Element("ADDITIONALUNITS")?.Value?.Trim(),
@@ -234,9 +259,39 @@ public class TallyService
                 AlterId         = ParseLong(el.Element("ALTERID")?.Value),
                 CompanyId       = company.CompanyId,
                 LastSyncedAt    = now
-            })
-            .Where(s => !string.IsNullOrWhiteSpace(s.ItemName))
-            .ToList();
+            });
+
+            foreach (var gst in el.Elements("GSTDETAILS.LIST"))
+            {
+                var dateVal = gst.Element("APPLICABLEFROM")?.Value?.Trim();
+                if (dateVal?.Length != 8 || !DateTime.TryParseExact(dateVal, "yyyyMMdd", null,
+                        System.Globalization.DateTimeStyles.None, out var applicableFrom))
+                    continue;
+
+                // Only the "Any" state-wise block is used — per-state GST
+                // overrides exist in Tally but aren't a case this app needs.
+                var stateWise = gst.Elements("STATEWISEDETAILS.LIST").FirstOrDefault();
+                if (stateWise == null) continue;
+
+                decimal RateFor(string dutyHead) => ParseDecimal(
+                    stateWise.Elements("RATEDETAILS.LIST")
+                        .FirstOrDefault(r => string.Equals(r.Element("GSTRATEDUTYHEAD")?.Value?.Trim(), dutyHead, StringComparison.OrdinalIgnoreCase))
+                        ?.Element("GSTRATE")?.Value);
+
+                taxSlabs.Add(new StockItemTaxSlabRecord
+                {
+                    ItemName       = itemName,
+                    ApplicableFrom = applicableFrom,
+                    CGSTRate       = RateFor("CGST"),
+                    SGSTRate       = RateFor("SGST/UTGST"),
+                    IGSTRate       = RateFor("IGST"),
+                    CessRate       = RateFor("Cess"),
+                    StateCessRate  = RateFor("State Cess")
+                });
+            }
+        }
+
+        return (items, taxSlabs);
     }
 
     public async Task<List<Godown>> GetGodownsAsync(string tallyUrl, Company company)

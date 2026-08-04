@@ -211,7 +211,7 @@ public class MasterSyncJob : BackgroundService
 
     private async Task<(int Added, int Updated)> SyncStockItemsAsync(AppDbContext db, TallyService tallyService, string tallyUrl, Company company)
     {
-        var items = await tallyService.GetStockItemsAsync(tallyUrl, company);
+        var (items, taxSlabRecords) = await tallyService.GetStockItemsAsync(tallyUrl, company);
         _logger.LogInformation("Items from Tally for {Co}: {N}", company.TallyCompanyName, items.Count);
         if (!items.Any()) return (0, 0);
 
@@ -258,7 +258,54 @@ public class MasterSyncJob : BackgroundService
         }
 
         await db.SaveChangesAsync();
+
+        await SyncStockItemTaxSlabsAsync(db, taxSlabRecords, existing);
+
         return (added, updated);
+    }
+
+    // Full-replace: every item's slab set is dropped and reinserted from the
+    // latest Tally data each sync — an item's GST history is small (a
+    // handful of rate-notification dates), so this is cheap and avoids
+    // reconciling individual slab rows. `itemsByName` must have real
+    // StockItemIds (i.e. called after SaveChangesAsync for new items).
+    private async Task SyncStockItemTaxSlabsAsync(
+        AppDbContext db, List<TallyService.StockItemTaxSlabRecord> taxSlabs, Dictionary<string, StockItem> itemsByName)
+    {
+        if (taxSlabs.Count == 0) return;
+
+        var itemIds = taxSlabs
+            .Select(t => NormalizeName(t.ItemName))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(itemsByName.ContainsKey)
+            .Select(n => itemsByName[n].StockItemId)
+            .ToList();
+
+        var existingSlabs = await db.StockItemTaxSlabs
+            .Where(t => itemIds.Contains(t.StockItemId))
+            .ToListAsync();
+        db.StockItemTaxSlabs.RemoveRange(existingSlabs);
+
+        foreach (var group in taxSlabs.GroupBy(t => NormalizeName(t.ItemName), StringComparer.OrdinalIgnoreCase))
+        {
+            if (!itemsByName.TryGetValue(group.Key, out var item)) continue;
+            foreach (var slab in group)
+            {
+                db.StockItemTaxSlabs.Add(new StockItemTaxSlab
+                {
+                    StockItemId    = item.StockItemId,
+                    CompanyId      = item.CompanyId,
+                    ApplicableFrom = slab.ApplicableFrom,
+                    CGSTRate       = slab.CGSTRate,
+                    SGSTRate       = slab.SGSTRate,
+                    IGSTRate       = slab.IGSTRate,
+                    CessRate       = slab.CessRate,
+                    StateCessRate  = slab.StateCessRate
+                });
+            }
+        }
+
+        await db.SaveChangesAsync();
     }
 
     private async Task<(int Added, int Updated)> SyncGodownsAsync(AppDbContext db, TallyService tallyService, string tallyUrl, Company company)

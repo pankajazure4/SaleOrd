@@ -78,6 +78,49 @@ public class AccountController : Controller
         return View(model);
     }
 
+    // Public self-signup — see SignupRequest for why this doesn't create an
+    // AppUser directly. Territories/clients too numerous for an admin to
+    // create every login by hand, so users request their own account here
+    // and an Admin approves/rejects from Admin > Signup Requests.
+    [HttpGet]
+    public async Task<IActionResult> SignUp()
+    {
+        if (_signIn.IsSignedIn(User)) return RedirectToAction("Index", "Dashboard");
+        ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
+        return View(new SignUpVM());
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> SignUp(SignUpVM model)
+    {
+        if (await _userManager.FindByEmailAsync(model.Email) != null)
+            ModelState.AddModelError("Email", "An account with this email already exists.");
+        else if (await _db.SignupRequests.AnyAsync(r => r.Email == model.Email && r.Status == SignupRequestStatus.Pending))
+            ModelState.AddModelError("Email", "A signup request for this email is already pending approval.");
+
+        if (await _userManager.Users.AnyAsync(u => u.PhoneNumber == model.PhoneNumber))
+            ModelState.AddModelError("PhoneNumber", "An account with this mobile number already exists.");
+        else if (await _db.SignupRequests.AnyAsync(r => r.PhoneNumber == model.PhoneNumber && r.Status == SignupRequestStatus.Pending))
+            ModelState.AddModelError("PhoneNumber", "A signup request with this mobile number is already pending approval.");
+
+        if (!ModelState.IsValid)
+        {
+            ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
+            return View(model);
+        }
+
+        _db.SignupRequests.Add(new SignupRequest
+        {
+            FullName = model.FullName,
+            Email = model.Email,
+            PhoneNumber = model.PhoneNumber,
+            RequestedCompanyId = model.RequestedCompanyId
+        });
+        await _db.SaveChangesAsync();
+
+        return View("SignUpSubmitted");
+    }
+
     [HttpPost, ValidateAntiForgeryToken, Authorize]
     public async Task<IActionResult> Logout()
     {

@@ -168,7 +168,7 @@ public class SyncOrchestrator
                 var ledgers = await _tally.GetLedgersAsync(_config.TallyUrl, company);
                 await Task.Delay(500);
                 _logger.Info($"[{company.CompanyName}] Fetching stock items...");
-                var items   = await _tally.GetStockItemsAsync(_config.TallyUrl, company);
+                var (items, taxSlabRecords) = await _tally.GetStockItemsAsync(_config.TallyUrl, company);
                 await Task.Delay(500);
                 _logger.Info($"[{company.CompanyName}] Fetching godowns...");
                 var godowns = await _tally.GetGodownsAsync(_config.TallyUrl, company);
@@ -178,6 +178,7 @@ public class SyncOrchestrator
                 var (lNew, lUpd) = await _sql.UpsertLedgersAsync(_connString, company.CompanyId, ledgers);
                 _logger.Info($"[{company.CompanyName}] Saving stock items to SQL...");
                 var (iNew, iUpd) = await _sql.UpsertStockItemsAsync(_connString, company.CompanyId, items);
+                await _sql.UpsertStockItemTaxSlabsAsync(_connString, company.CompanyId, taxSlabRecords);
                 _logger.Info($"[{company.CompanyName}] Saving godowns to SQL...");
                 var (gNew, gUpd) = await _sql.UpsertGodownsAsync(_connString, company.CompanyId, godowns);
 

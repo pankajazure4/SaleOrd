@@ -52,6 +52,9 @@
             <input type="hidden" id="entryItemId" />
             <input type="hidden" id="entryItemName" />
             <input type="hidden" id="entryItemUOM" />
+            <input type="hidden" id="entryItemCGST" value="0" />
+            <input type="hidden" id="entryItemSGST" value="0" />
+            <input type="hidden" id="entryItemIGST" value="0" />
             <input type="hidden" id="editingIndex" value="" />
 
             <div class="col-12 col-md-4 position-relative">
@@ -136,9 +139,9 @@
     <div class="card p-3 mb-3">
         <div class="d-flex justify-content-between align-items-center mb-3">
             <span class="fw-semibold">Totals</span>
-            @if ((string)(ViewBag.DefaultTaxType ?? "None") != "None" && (decimal)(ViewBag.DefaultTaxPercent ?? 0m) > 0)
+            @if ((string)(ViewBag.DefaultTaxType ?? "None") != "None")
             {
-                <span class="badge bg-info text-dark">@ViewBag.DefaultTaxType @ViewBag.DefaultTaxPercent%</span>
+                <span class="badge bg-info text-dark">@ViewBag.DefaultTaxType — rate per item master</span>
             }
         </div>
 
@@ -148,7 +151,6 @@
         <input type="hidden" asp-for="RoundOff"   id="hidRoundOff" />
         <input type="hidden" asp-for="GrandTotal" id="hidGrandTotal" />
         <input type="hidden" id="taxTypeSelect"   value="@ViewBag.DefaultTaxType" />
-        <input type="hidden" id="taxPercentInput" value="@ViewBag.DefaultTaxPercent" />
 
         <table class="table table-sm table-borderless mb-0 ms-auto" style="max-width:320px">
             <tbody>
@@ -209,7 +211,10 @@
                 rate: @item.Rate,
                 amount: @item.Amount,
                 godownId: @(item.GodownId.HasValue ? item.GodownId.Value.ToString() : "null"),
-                godownName: @Html.Raw(item.GodownName != null ? $"'{item.GodownName.Replace("'", "\\'")}'" : "null")
+                godownName: @Html.Raw(item.GodownName != null ? $"'{item.GodownName.Replace("'", "\\'")}'" : "null"),
+                cgstRate: @item.CGSTRate,
+                sgstRate: @item.SGSTRate,
+                igstRate: @item.IGSTRate
             });
             </text>
         }
@@ -360,24 +365,26 @@
         $('#entryItemId').val(id);
         $('#entryItemName').val(name);
         $('#entryItemUOM').val(uom);
+        $('#entryItemCGST, #entryItemSGST, #entryItemIGST').val(0);
 
         $('#entryItemSelectedName').text(name + ' (' + uom + ')');
         $('#entryItemSelectedLabel').show();
         $('#itemSearchWrap').hide();
         $('#entryItemDropdown').hide();
 
-        // Fetch customer-specific last rate; fall back to master rate
+        // Fetch customer-specific last rate + this item's current GST% (as
+        // of the order date) in one call; fall back to master rate on error.
         var ledgerId = $('#ledgerIdInput').val();
-        if (ledgerId && ledgerId !== '0') {
-            $.get('/SaleOrder/GetItemRate', { stockItemId: id, ledgerId: ledgerId }, function(data) {
-                var r = data.rate || 0;
-                $('#entryRate').val(r > 0 ? r.toFixed(2) : (masterRate > 0 ? masterRate.toFixed(2) : ''));
-            }).fail(function() {
-                if (masterRate > 0) $('#entryRate').val(masterRate.toFixed(2));
-            });
-        } else {
+        var orderDate = $('#OrderDate').val();
+        $.get('/SaleOrder/GetItemRate', { stockItemId: id, ledgerId: ledgerId || 0, orderDate: orderDate }, function(data) {
+            var r = data.rate || 0;
+            $('#entryRate').val(r > 0 ? r.toFixed(2) : (masterRate > 0 ? masterRate.toFixed(2) : ''));
+            $('#entryItemCGST').val(data.cgstRate || 0);
+            $('#entryItemSGST').val(data.sgstRate || 0);
+            $('#entryItemIGST').val(data.igstRate || 0);
+        }).fail(function() {
             if (masterRate > 0) $('#entryRate').val(masterRate.toFixed(2));
-        }
+        });
         $('#entryQty').focus();
     }
 
@@ -385,6 +392,7 @@
         $('#entryItemId').val('');
         $('#entryItemName').val('');
         $('#entryItemUOM').val('');
+        $('#entryItemCGST, #entryItemSGST, #entryItemIGST').val(0);
         $('#entryItemSearch').val('');
         $('#entryItemSelectedLabel').hide();
         $('#itemSearchWrap').show();
@@ -424,7 +432,10 @@
             rate: rate,
             amount: amount,
             godownId: null,
-            godownName: null
+            godownName: null,
+            cgstRate: parseFloat($('#entryItemCGST').val()) || 0,
+            sgstRate: parseFloat($('#entryItemSGST').val()) || 0,
+            igstRate: parseFloat($('#entryItemIGST').val()) || 0
         };
 
         var editIdx = $('#editingIndex').val();
@@ -454,7 +465,10 @@
         $('#entryItemId').val(item.stockItemId);
         $('#entryItemName').val(item.itemName);
         $('#entryItemUOM').val(item.uom);
-        
+        $('#entryItemCGST').val(item.cgstRate || 0);
+        $('#entryItemSGST').val(item.sgstRate || 0);
+        $('#entryItemIGST').val(item.igstRate || 0);
+
         $('#entryItemSelectedName').text(item.itemName + ' (' + item.uom + ')');
         $('#entryItemSelectedLabel').show();
         $('#itemSearchWrap').hide();
@@ -607,11 +621,30 @@
         return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
+    // Tax is now summed per line at that item's own CGST/SGST/IGST% (from
+    // its Tally master data, fetched into itemsList[].cgstRate/etc when the
+    // item was picked) rather than one flat rate applied to the whole
+    // subtotal — this is purely a live preview for the user. The server
+    // recomputes the same thing authoritatively from StockItemTaxSlabs on
+    // save and ignores whatever these hidden fields carry.
     function recalcTotals() {
         var subtotal = itemsList.reduce(function(s, i) { return s + i.amount; }, 0);
-        var taxType    = $('#taxTypeSelect').val() || 'None';
-        var taxPercent = parseFloat($('#taxPercentInput').val()) || 0;
-        var taxTotal   = Math.round(subtotal * taxPercent / 100 * 100) / 100;
+        var taxType  = $('#taxTypeSelect').val() || 'None';
+
+        var igstTotal = 0, cgstTotal = 0, sgstTotal = 0;
+        itemsList.forEach(function(item) {
+            if (taxType === 'IGST') {
+                igstTotal += item.amount * (item.igstRate || 0) / 100;
+            } else if (taxType === 'CGST_SGST') {
+                cgstTotal += item.amount * (item.cgstRate || 0) / 100;
+                sgstTotal += item.amount * (item.sgstRate || 0) / 100;
+            }
+        });
+        igstTotal = Math.round(igstTotal * 100) / 100;
+        cgstTotal = Math.round(cgstTotal * 100) / 100;
+        sgstTotal = Math.round(sgstTotal * 100) / 100;
+        var taxTotal = igstTotal + cgstTotal + sgstTotal;
+
         var rawGrand   = subtotal + taxTotal;
         var rounded    = Math.round(rawGrand);
         var roundOff   = Math.round((rounded - rawGrand) * 100) / 100;
@@ -623,20 +656,17 @@
         $('#lblGrandTotal').text('₹ ' + fmt(grandTotal));
 
         $('#rowIGST, #rowCGST, #rowSGST').hide();
-        if (taxType === 'IGST' && taxPercent > 0) {
+        if (taxType === 'IGST' && igstTotal > 0) {
             $('#rowIGST').show();
-            $('#lblIGSTLabel').text('IGST (' + taxPercent + '%):');
-            $('#lblIGSTAmt').text('₹ ' + fmt(taxTotal));
-        } else if (taxType === 'CGST_SGST' && taxPercent > 0) {
-            var half  = Math.round(taxTotal / 2 * 100) / 100;
-            var other = Math.round((taxTotal - half) * 100) / 100;
-            var half_pct = Math.round(taxPercent / 2 * 100) / 100;
+            $('#lblIGSTLabel').text('IGST:');
+            $('#lblIGSTAmt').text('₹ ' + fmt(igstTotal));
+        } else if (taxType === 'CGST_SGST' && (cgstTotal > 0 || sgstTotal > 0)) {
             $('#rowCGST').show();
             $('#rowSGST').show();
-            $('#lblCGSTLabel').text('CGST (' + half_pct + '%):');
-            $('#lblSGSTLabel').text('SGST (' + half_pct + '%):');
-            $('#lblCGSTAmt').text('₹ ' + fmt(half));
-            $('#lblSGSTAmt').text('₹ ' + fmt(other));
+            $('#lblCGSTLabel').text('CGST:');
+            $('#lblSGSTLabel').text('SGST:');
+            $('#lblCGSTAmt').text('₹ ' + fmt(cgstTotal));
+            $('#lblSGSTAmt').text('₹ ' + fmt(sgstTotal));
         }
 
         if (roundOff !== 0) {
@@ -646,9 +676,10 @@
             $('#rowRoundOff').hide();
         }
 
-        // Update hidden inputs for form submission
+        // Update hidden inputs for form submission (informational only —
+        // the server ignores these and recomputes from scratch)
         $('#hidTaxType').val(taxType);
-        $('#hidTaxPercent').val(taxPercent);
+        $('#hidTaxPercent').val(subtotal > 0 ? Math.round(taxTotal / subtotal * 10000) / 100 : 0);
         $('#hidTaxTotal').val(taxTotal);
         $('#hidRoundOff').val(roundOff);
         $('#hidGrandTotal').val(grandTotal);
@@ -665,12 +696,11 @@
         <text>selectParty(@Model.LedgerId, '@Html.Raw((Model.LedgerName ?? "").Replace("'", "\\'"))');</text>
     }
 
-    // For edits: override auto-settings with the order's saved tax values
+    // For edits: override the default TaxType with the order's saved value
     @if (Model.SaleOrderId > 0 && Model.TaxType != "None")
     {
         <text>
         $('#taxTypeSelect').val('@Model.TaxType');
-        $('#taxPercentInput').val('@Model.TaxPercent');
         </text>
     }
     recalcTotals();

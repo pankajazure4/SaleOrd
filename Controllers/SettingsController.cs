@@ -56,7 +56,6 @@ public class SettingsController : Controller
         // Load tax defaults for display
         var allSettings = await _db.AppSettings.ToListAsync();
         ViewBag.DefaultTaxType     = allSettings.FirstOrDefault(s => s.Key == "DefaultTaxType")?.Value ?? "None";
-        ViewBag.DefaultTaxPercent  = allSettings.FirstOrDefault(s => s.Key == "DefaultTaxPercent")?.Value ?? "0";
         ViewBag.TaxLedgerIGST     = allSettings.FirstOrDefault(s => s.Key == "TaxLedgerIGST")?.Value ?? "IGST";
         ViewBag.TaxLedgerCGST     = allSettings.FirstOrDefault(s => s.Key == "TaxLedgerCGST")?.Value ?? "CGST";
         ViewBag.TaxLedgerSGST     = allSettings.FirstOrDefault(s => s.Key == "TaxLedgerSGST")?.Value ?? "SGST";
@@ -82,14 +81,17 @@ public class SettingsController : Controller
     }
 
     [HttpPost, ValidateAntiForgeryToken]
-    public async Task<IActionResult> SaveTaxSettings(string defaultTaxType, string defaultTaxPercent,
+    public async Task<IActionResult> SaveTaxSettings(string defaultTaxType,
         string taxLedgerIGST, string taxLedgerCGST, string taxLedgerSGST,
         string salesLedger, string taxLedgerRoundOff)
     {
         var keys = new Dictionary<string, string>
         {
+            // The rate itself now always comes from each item's own
+            // StockItemTaxSlabs (synced from Tally) — DefaultTaxPercent is
+            // no longer read anywhere; only which duty heads apply
+            // (IGST vs CGST+SGST) is still a setting.
             ["DefaultTaxType"]    = defaultTaxType ?? "None",
-            ["DefaultTaxPercent"] = defaultTaxPercent ?? "0",
             ["TaxLedgerIGST"]    = taxLedgerIGST ?? "IGST",
             ["TaxLedgerCGST"]    = taxLedgerCGST ?? "CGST",
             ["TaxLedgerSGST"]    = taxLedgerSGST ?? "SGST",

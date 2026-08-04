@@ -7,14 +7,18 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- SaleOrd.SyncAgent is a separate WinForms project nested in this folder
-         (sibling projects in this dev environment live under a shared parent
-         rather than actually side-by-side) — exclude it from this project's
-         default glob so its System.Windows.Forms code doesn't get compiled
-         into the ASP.NET Core web app. -->
+    <!-- SaleOrd.SyncAgent and SalesPush.SyncAgent are separate WinForms
+         projects nested in this folder (sibling projects in this dev
+         environment live under a shared parent rather than actually
+         side-by-side) — exclude them from this project's default glob so
+         their System.Windows.Forms code doesn't get compiled into the
+         ASP.NET Core web app. -->
     <Compile Remove="SaleOrd.SyncAgent\**\*.cs" />
     <None Remove="SaleOrd.SyncAgent\**" />
     <Content Remove="SaleOrd.SyncAgent\**" />
+    <Compile Remove="SalesPush.SyncAgent\**\*.cs" />
+    <None Remove="SalesPush.SyncAgent\**" />
+    <Content Remove="SalesPush.SyncAgent\**" />
   </ItemGroup>
 
   <ItemGroup>

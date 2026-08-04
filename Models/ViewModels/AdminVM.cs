@@ -78,3 +78,37 @@ public class UserEditVM
     [MinLength(6), DataType(DataType.Password)]
     public string? NewPassword { get; set; }
 }
+
+// Public self-signup form — no password/role/company-access fields here on
+// purpose. Role and final company access are Admin-only decisions made at
+// approval time (AdminController.ApproveSignup), not something a signee
+// picks for themselves.
+public class SignUpVM
+{
+    [Required, MaxLength(100)]
+    public string FullName { get; set; } = string.Empty;
+
+    [Required, EmailAddress]
+    public string Email { get; set; } = string.Empty;
+
+    [Required(ErrorMessage = "Phone number is required")]
+    [RegularExpression(@"^\d{10}$", ErrorMessage = "Enter a valid 10-digit mobile number")]
+    public string PhoneNumber { get; set; } = string.Empty;
+
+    [Required(ErrorMessage = "Select your company / territory")]
+    public int RequestedCompanyId { get; set; }
+}
+
+public class SignupRequestListVM
+{
+    public int SignupRequestId { get; set; }
+    public string FullName { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public string? PhoneNumber { get; set; }
+    public string RequestedCompanyName { get; set; } = string.Empty;
+    public SignupRequestStatus Status { get; set; }
+    public DateTime RequestedAt { get; set; }
+    public DateTime? ReviewedAt { get; set; }
+    public string? ReviewedByName { get; set; }
+    public string? RejectionReason { get; set; }
+}
