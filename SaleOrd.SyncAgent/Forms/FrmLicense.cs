@@ -1,14 +1,16 @@
-using SalesPush.SyncAgent.Licensing;
-using SalesPush.SyncAgent.Models;
-using SalesPush.SyncAgent.Services;
+using SaleOrd.SyncAgent.Licensing;
+using SaleOrd.SyncAgent.Models;
+using SaleOrd.SyncAgent.Services;
 
-namespace SalesPush.SyncAgent.Forms;
+namespace SaleOrd.SyncAgent.Forms;
 
 // Blocks app startup until a valid license is activated. Shown via
 // ShowDialog() from Program.cs before FrmMain is ever created — if this
 // closes with anything other than DialogResult.OK, the process exits without
-// starting the agent. Re-shown from FrmMain's Configuration tab ("Change
-// License Key") to let an already-activated install switch keys later.
+// starting the agent. Ported from SalesPush.SyncAgent's FrmLicense — same
+// design, including deliberately NOT displaying the machine fingerprint
+// anywhere in the UI (it's still sent to the portal on every validate call,
+// just never shown/copyable on screen).
 public class FrmLicense : Form
 {
     private readonly LicenseService _licenseSvc;
@@ -25,9 +27,9 @@ public class FrmLicense : Form
         _licenseSvc = licenseSvc;
         _config = config;
 
-        Text = "SalesPush Sync Agent — License Activation";
+        Text = "SaleOrd Sync Agent — License Activation";
         Width = 520;
-        Height = 460;
+        Height = 400;
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -43,23 +45,25 @@ public class FrmLicense : Form
 
     private void BuildUi()
     {
-        var card = UiTheme.CreateCard("🔑 Activate SalesPush Sync Agent");
-        card.Dock = DockStyle.Fill;
-        card.Margin = new Padding(16);
+        var card = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Card, Padding = new Padding(20, 44, 20, 20) };
+        card.Paint += (_, e) =>
+        {
+            using var pen = new Pen(UiTheme.Border);
+            e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1);
+        };
+        var lblTitle = new Label
+        {
+            Text = "🔑 Activate SaleOrd Sync Agent",
+            Font = new Font("Segoe UI", 11f, FontStyle.Bold),
+            ForeColor = UiTheme.Primary,
+            AutoSize = true,
+            Location = new Point(20, 14)
+        };
+        card.Controls.Add(lblTitle);
 
         var outer = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16) };
         outer.Controls.Add(card);
         Controls.Add(outer);
-
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            ColumnCount = 1,
-            AutoSize = true,
-            Top = 50,
-            Location = new Point(0, 50)
-        };
-        layout.Width = card.Width;
 
         var lblIntro = new Label
         {
@@ -124,7 +128,7 @@ public class FrmLicense : Form
     private async void FrmLicense_Load(object? sender, EventArgs e)
     {
         var existingKey = LicenseService.GetLicenseKey(_config);
-        _lblCurrentKey.Text = string.IsNullOrEmpty(existingKey) ? "(none activated)" : Licensing.LicenseKeyMask.Mask(existingKey);
+        _lblCurrentKey.Text = string.IsNullOrEmpty(existingKey) ? "(none activated)" : LicenseKeyMask.Mask(existingKey);
 
         if (!string.IsNullOrWhiteSpace(existingKey))
         {
@@ -160,7 +164,7 @@ public class FrmLicense : Form
             var result = await _licenseSvc.CheckAsync(_config);
             if (result.IsValid)
             {
-                _lblCurrentKey.Text = Licensing.LicenseKeyMask.Mask(LicenseService.GetLicenseKey(_config));
+                _lblCurrentKey.Text = LicenseKeyMask.Mask(LicenseService.GetLicenseKey(_config));
                 _txtNewKey.Clear();
                 _lblStatus.ForeColor = UiTheme.Success;
                 _lblStatus.Text = "License activated.";

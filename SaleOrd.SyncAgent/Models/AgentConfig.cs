@@ -17,4 +17,14 @@ public class AgentConfig
 
     public bool StartMinimized { get; set; } = false;
     public bool AutoStartWithWindows { get; set; } = true;
+
+    // License activation state — see Services/LicenseService.cs. Key is
+    // DPAPI-protected the same way SqlPasswordProtected is; the rest is the
+    // offline-grace-period snapshot from the last successful portal
+    // validation.
+    public string LicenseKeyProtected { get; set; } = "";
+    public string LicenseLastValidatedOnUtc { get; set; } = "";
+    public string LicenseExpiresOnUtc { get; set; } = "";
+    public bool LicenseIsTrial { get; set; }
+    public string LicenseMachineId { get; set; } = "";
 }

@@ -1,5 +1,6 @@
 using System.Reflection;
 using Microsoft.Win32;
+using SaleOrd.SyncAgent.Licensing;
 using SaleOrd.SyncAgent.Models;
 using SaleOrd.SyncAgent.Services;
 
@@ -10,6 +11,7 @@ public class FrmMain : Form
     private readonly ConfigService _configSvc = new();
     private readonly AgentLogger _logger;
     private readonly SyncOrchestrator _orchestrator;
+    private readonly LicenseService _licenseSvc;
     private AgentConfig _config = new();
     private bool _reallyExit;
 
@@ -37,22 +39,32 @@ public class FrmMain : Form
     private CheckBox _chkAutoStart = new();
     private Label _lblConfigMsg = new();
 
+    // License section (Config tab)
+    private Label _lblLicenseStatus = new();
+    private Label _lblLicenseKeyMasked = new();
+
     // Logs tab
     private TextBox _txtLogs = new();
 
     private NotifyIcon _trayIcon = new();
 
+    private const int FieldWidth = 300;
+
     public FrmMain()
     {
         _logger = new AgentLogger(ConfigService.LogFilePath);
         _orchestrator = new SyncOrchestrator(_logger);
+        _licenseSvc = new LicenseService(_configSvc);
 
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
         Text = $"SaleOrd Sync Agent — v{version}";
-        Width = 720;
-        Height = 560;
+        Width = 1000;
+        Height = 720;
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(640, 480);
+        WindowState = FormWindowState.Maximized;
+        MinimumSize = new Size(820, 600);
+        BackColor = UiTheme.Background;
+        Font = new Font("Segoe UI", 9.5f);
 
         try { Icon = new Icon(Path.Combine(AppContext.BaseDirectory, "agent.ico")); }
         catch { /* fall back to the default form icon if the file isn't next to the exe for some reason */ }
@@ -76,7 +88,8 @@ public class FrmMain : Form
         if (!string.IsNullOrWhiteSpace(_config.SqlServer) && !string.IsNullOrWhiteSpace(_config.TallyUrl))
         {
             _orchestrator.Start(_config);
-            _btnStartStop.Text = "Stop Agent";
+            _btnStartStop.Text = "⏹  Stop Agent";
+            UiTheme.StyleButton(_btnStartStop, UiTheme.Danger);
         }
 
         if (_config.StartMinimized)
@@ -87,14 +100,21 @@ public class FrmMain : Form
     }
 
     // ── UI construction ──────────────────────────────────────────────────
+    //
+    // Ported from SalesPush.SyncAgent's redesigned FrmMain: native GroupBox
+    // containers (Dock=Top + AutoSize=true — NOT Dock=Fill, which measures
+    // circularly and clips) arranged in a 2-column TableLayoutPanel grid.
+    // All the existing SQL/Tally/interval fields and their behaviors below
+    // are unchanged from the original — only how they're laid out and
+    // styled changed.
 
     private void BuildUi()
     {
-        var tabs = new TabControl { Dock = DockStyle.Fill };
+        var tabs = new TabControl { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 9.5f), Padding = new Point(16, 6) };
 
-        var tabStatus = new TabPage("Status");
-        var tabConfig = new TabPage("Configuration");
-        var tabLogs = new TabPage("Logs");
+        var tabStatus = new TabPage("📊  Status") { BackColor = UiTheme.Background };
+        var tabConfig = new TabPage("⚙️  Configuration") { BackColor = UiTheme.Background };
+        var tabLogs = new TabPage("📝  Logs") { BackColor = UiTheme.Background };
 
         BuildStatusTab(tabStatus);
         BuildConfigTab(tabConfig);
@@ -104,138 +124,266 @@ public class FrmMain : Form
         tabs.TabPages.Add(tabConfig);
         tabs.TabPages.Add(tabLogs);
 
+        // A bottom bar outside the TabControl — not tied to any one tab, so
+        // Exit stays reachable no matter which tab is open, without hunting
+        // for the tray icon.
+        var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 52, BackColor = UiTheme.Card, Padding = new Padding(16, 8, 16, 8) };
+        bottomBar.Paint += (_, e) => e.Graphics.DrawLine(new Pen(UiTheme.Border), 0, 0, bottomBar.Width, 0);
+
+        var btnExit = new Button { Text = "✕  Exit", AutoSize = true, Anchor = AnchorStyles.Right | AnchorStyles.Top };
+        UiTheme.StyleButton(btnExit, UiTheme.Danger);
+        btnExit.Location = new Point(bottomBar.Width - btnExit.PreferredSize.Width - 16, 8);
+        btnExit.Click += (_, _) => { _reallyExit = true; Close(); };
+        bottomBar.Controls.Add(btnExit);
+        bottomBar.Resize += (_, _) => btnExit.Location = new Point(bottomBar.Width - btnExit.Width - 16, 8);
+
+        var lblHint = new Label
+        {
+            Text = "Closing the window minimizes to tray and keeps syncing — use Exit to fully quit.",
+            AutoSize = true,
+            ForeColor = UiTheme.TextMuted,
+            Font = new Font("Segoe UI", 8.5f),
+            Location = new Point(0, 16)
+        };
+        bottomBar.Controls.Add(lblHint);
+
+        // Dock order matters: Dock=Bottom must be added before Dock=Fill, or
+        // the Fill control (tabs) claims the whole client area first and
+        // leaves nothing for the bottom bar to dock into.
+        Controls.Add(bottomBar);
         Controls.Add(tabs);
+    }
+
+    private static GroupBox MakeGroupBox(string title, Control content)
+    {
+        var gb = new GroupBox
+        {
+            Text = title,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+            ForeColor = UiTheme.Primary,
+            Padding = new Padding(12, 8, 12, 12),
+            Margin = new Padding(10)
+        };
+        content.Dock = DockStyle.Top;
+        content.Font = new Font("Segoe UI", 9.5f, FontStyle.Regular);
+        gb.Controls.Add(content);
+        return gb;
+    }
+
+    private static TableLayoutPanel MakeFieldGrid()
+    {
+        var p = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, AutoSize = true, GrowStyle = TableLayoutPanelGrowStyle.AddRows };
+        p.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        p.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        return p;
+    }
+
+    // Field controls get a fixed pixel width and stay left-anchored rather
+    // than Dock=Fill — otherwise a textbox stretches to whatever its
+    // container happens to be.
+    private static void AddField(TableLayoutPanel p, string label, Control control)
+    {
+        var r = p.RowCount;
+        p.RowCount = r + 1;
+        control.Anchor = AnchorStyles.Left;
+        if (control is TextBox tb)
+        {
+            tb.Width = FieldWidth;
+            tb.BorderStyle = BorderStyle.FixedSingle;
+            tb.Margin = new Padding(0, 4, 0, 4);
+        }
+        p.Controls.Add(new Label { Text = label, AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Left, ForeColor = UiTheme.TextDark }, 0, r);
+        p.Controls.Add(control, 1, r);
     }
 
     private void BuildStatusTab(TabPage page)
     {
-        var panel = new TableLayoutPanel
+        var outer = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 3,
-            Padding = new Padding(16),
-            AutoSize = true
+            ColumnCount = 2,
+            AutoScroll = true,
+            Padding = new Padding(10),
+            BackColor = UiTheme.Background
         };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+        outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        var btnTestSql = new Button { Text = "Test SQL", AutoSize = true };
+        // Agent Control
+        var controlGrid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 1, AutoSize = true };
+        _lblRunState.Text = "● Agent: stopped";
+        _lblRunState.AutoSize = true;
+        _lblRunState.Font = new Font("Segoe UI", 12f, FontStyle.Bold);
+        _lblRunState.ForeColor = UiTheme.Danger;
+        _lblRunState.Margin = new Padding(0, 4, 0, 12);
+
+        var btnRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+        _btnStartStop.Text = "▶  Start Agent";
+        UiTheme.StyleButton(_btnStartStop, UiTheme.Success);
+        _btnStartStop.Click += BtnStartStop_Click;
+        _btnSyncNow.Text = "⟳  Sync Now";
+        UiTheme.StyleButton(_btnSyncNow, UiTheme.Primary);
+        _btnSyncNow.Margin = new Padding(10, 0, 0, 0);
+        _btnSyncNow.Click += async (_, _) => await SyncNowClicked();
+        btnRow.Controls.Add(_btnStartStop);
+        btnRow.Controls.Add(_btnSyncNow);
+
+        controlGrid.Controls.Add(_lblRunState, 0, 0);
+        controlGrid.Controls.Add(btnRow, 0, 1);
+
+        // Connections — dedicated [button | message] grid so the button and
+        // its status text sit side by side on the same row, not stacked or
+        // sharing a cell.
+        var connGrid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, AutoSize = true, GrowStyle = TableLayoutPanelGrowStyle.AddRows };
+        connGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+        connGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        var btnTestSql = new Button { Text = "Test SQL", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 0, 6) };
+        UiTheme.StyleButton(btnTestSql, UiTheme.Info);
         btnTestSql.Click += async (_, _) => await TestSqlClicked();
+        _lblSqlStatus = UiTheme.StatusChip("SQL: unknown", UiTheme.TextMuted);
+        _lblSqlStatus.Anchor = AnchorStyles.Left;
+        _lblSqlStatus.Margin = new Padding(12, 12, 0, 6);
+        connGrid.Controls.Add(btnTestSql, 0, 0);
+        connGrid.Controls.Add(_lblSqlStatus, 1, 0);
 
-        var btnTestTally = new Button { Text = "Test Tally", AutoSize = true };
+        var btnTestTally = new Button { Text = "Test Tally", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 0, 6) };
+        UiTheme.StyleButton(btnTestTally, UiTheme.Info);
         btnTestTally.Click += async (_, _) => await TestTallyClicked();
+        _lblTallyStatus = UiTheme.StatusChip("Tally: unknown", UiTheme.TextMuted);
+        _lblTallyStatus.Anchor = AnchorStyles.Left;
+        _lblTallyStatus.Margin = new Padding(12, 12, 0, 6);
+        connGrid.Controls.Add(btnTestTally, 0, 1);
+        connGrid.Controls.Add(_lblTallyStatus, 1, 1);
 
-        _lblSqlStatus.Text = "SQL: unknown";
-        _lblSqlStatus.AutoSize = true;
-        _lblTallyStatus.Text = "Tally: unknown";
-        _lblTallyStatus.AutoSize = true;
-
+        // Schedule — 2x2: Last/Next Master sync, Last/Next Order cycle
+        var schedGrid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, AutoSize = true };
         _lblLastMaster.Text = "Last master sync: never";
         _lblLastMaster.AutoSize = true;
+        _lblLastMaster.Margin = new Padding(0, 2, 24, 6);
         _lblNextMaster.Text = "Next master sync: —";
         _lblNextMaster.AutoSize = true;
+        _lblNextMaster.Margin = new Padding(0, 2, 0, 6);
         _lblLastOrder.Text = "Last order cycle: never";
         _lblLastOrder.AutoSize = true;
+        _lblLastOrder.Margin = new Padding(0, 0, 24, 12);
         _lblNextOrder.Text = "Next order cycle: —";
         _lblNextOrder.AutoSize = true;
-
-        _lblRunState.Text = "Agent: stopped";
-        _lblRunState.AutoSize = true;
-        _lblRunState.Font = new Font(_lblRunState.Font, FontStyle.Bold);
-
-        _btnStartStop.Text = "Start Agent";
-        _btnStartStop.AutoSize = true;
-        _btnStartStop.Click += BtnStartStop_Click;
-
-        _btnSyncNow.Text = "Sync Now";
-        _btnSyncNow.AutoSize = true;
-        _btnSyncNow.Click += async (_, _) => await SyncNowClicked();
-
+        _lblNextOrder.Margin = new Padding(0, 0, 0, 12);
         var lblLogPath = new Label
         {
             Text = "Log file: " + ConfigService.LogFilePath,
             AutoSize = true,
-            ForeColor = Color.Gray,
-            Font = new Font(_lblRunState.Font.FontFamily, 8)
+            ForeColor = UiTheme.TextMuted,
+            Font = new Font("Segoe UI", 8f)
         };
+        schedGrid.Controls.Add(_lblLastMaster, 0, 0);
+        schedGrid.Controls.Add(_lblNextMaster, 1, 0);
+        schedGrid.Controls.Add(_lblLastOrder, 0, 1);
+        schedGrid.Controls.Add(_lblNextOrder, 1, 1);
+        schedGrid.Controls.Add(lblLogPath, 0, 2);
+        schedGrid.SetColumnSpan(lblLogPath, 2);
 
-        int row = 0;
-        panel.RowCount = 9;
-        panel.Controls.Add(_lblRunState, 0, row); panel.Controls.Add(_btnStartStop, 1, row); panel.Controls.Add(_btnSyncNow, 2, row); row++;
-        panel.Controls.Add(new Label { Text = "", Height = 10 }, 0, row); row++;
-        panel.Controls.Add(_lblSqlStatus, 0, row); panel.Controls.Add(btnTestSql, 1, row); row++;
-        panel.Controls.Add(_lblTallyStatus, 0, row); panel.Controls.Add(btnTestTally, 1, row); row++;
-        panel.Controls.Add(new Label { Text = "", Height = 10 }, 0, row); row++;
-        panel.Controls.Add(_lblLastMaster, 0, row); panel.Controls.Add(_lblNextMaster, 1, row); row++;
-        panel.Controls.Add(_lblLastOrder, 0, row); panel.Controls.Add(_lblNextOrder, 1, row); row++;
-        panel.Controls.Add(new Label { Text = "", Height = 10 }, 0, row); row++;
-        panel.Controls.Add(lblLogPath, 0, row); panel.SetColumnSpan(lblLogPath, 3); row++;
+        var gbControl = MakeGroupBox("⚡  Agent Control", controlGrid);
+        var gbConn = MakeGroupBox("🔌  Connections", connGrid);
+        var gbSched = MakeGroupBox("🕐  Schedule", schedGrid);
 
-        page.Controls.Add(panel);
+        outer.Controls.Add(gbControl, 0, 0);
+        outer.Controls.Add(gbConn, 1, 0);
+        outer.Controls.Add(gbSched, 0, 1);
+        outer.SetColumnSpan(gbSched, 2);
+
+        page.Controls.Add(outer);
     }
 
     private void BuildConfigTab(TabPage page)
     {
-        var panel = new TableLayoutPanel
+        var outer = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            Padding = new Padding(16),
-            AutoSize = true
+            AutoScroll = true,
+            Padding = new Padding(10),
+            BackColor = UiTheme.Background
         };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        for (int i = 0; i < 3; i++) outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        void AddRow(string label, Control control)
-        {
-            var r = panel.RowCount;
-            panel.RowCount = r + 1;
-            control.Dock = DockStyle.Fill;
-            panel.Controls.Add(new Label { Text = label, AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Left }, 0, r);
-            panel.Controls.Add(control, 1, r);
-        }
-
-        _txtSqlServer.Width = 320;
-        _txtSqlDatabase.Width = 320;
-        _txtSqlUser.Width = 320;
-        _txtSqlPassword.Width = 320;
+        // SQL Server Connection
+        var sqlGrid = MakeFieldGrid();
+        AddField(sqlGrid, "Server", _txtSqlServer);
+        AddField(sqlGrid, "Database", _txtSqlDatabase);
+        AddField(sqlGrid, "User", _txtSqlUser);
         _txtSqlPassword.UseSystemPasswordChar = true;
-        _txtTallyUrl.Width = 320;
+        AddField(sqlGrid, "Password", _txtSqlPassword);
+        AddField(sqlGrid, "Encrypt connection", _chkEncrypt);
 
+        // Tally Connection
+        var tallyGrid = MakeFieldGrid();
+        AddField(tallyGrid, "Tally URL", _txtTallyUrl);
+
+        // Schedule & Startup
+        var schedCfgGrid = MakeFieldGrid();
         _numMasterInterval.Minimum = 1;
         _numMasterInterval.Maximum = 1440;
         _numMasterInterval.Value = 30;
-
+        _numMasterInterval.Width = 100;
+        AddField(schedCfgGrid, "Master sync (min)", _numMasterInterval);
         _numOrderInterval.Minimum = 1;
         _numOrderInterval.Maximum = 1440;
         _numOrderInterval.Value = 3;
+        _numOrderInterval.Width = 100;
+        AddField(schedCfgGrid, "Order push (min)", _numOrderInterval);
+        AddField(schedCfgGrid, "Start minimized", _chkStartMinimized);
+        AddField(schedCfgGrid, "Start with Windows", _chkAutoStart);
 
-        AddRow("SQL Server (localhost or remote)", _txtSqlServer);
-        AddRow("Database", _txtSqlDatabase);
-        AddRow("SQL User", _txtSqlUser);
-        AddRow("SQL Password", _txtSqlPassword);
-        AddRow("Encrypt connection", _chkEncrypt);
-        AddRow("Local Tally URL", _txtTallyUrl);
-        AddRow("Master sync interval (min)", _numMasterInterval);
-        AddRow("Order push interval (min)", _numOrderInterval);
-        AddRow("Start minimized to tray", _chkStartMinimized);
-        AddRow("Start with Windows", _chkAutoStart);
+        // License
+        var licenseGrid = MakeFieldGrid();
+        _lblLicenseKeyMasked.AutoSize = true;
+        _lblLicenseKeyMasked.Font = new Font("Consolas", 9.5f);
+        _lblLicenseKeyMasked.Text = "(none activated)";
+        AddField(licenseGrid, "Current key", _lblLicenseKeyMasked);
+        _lblLicenseStatus = UiTheme.StatusChip("Unknown", UiTheme.TextMuted);
+        AddField(licenseGrid, "Status", _lblLicenseStatus);
+        var btnReactivateLicense = new Button { Text = "🔄  Reactivate License", AutoSize = true };
+        UiTheme.StyleButton(btnReactivateLicense, UiTheme.Warning);
+        btnReactivateLicense.Click += (_, _) => ReactivateLicenseClicked();
+        AddField(licenseGrid, "", btnReactivateLicense);
 
-        var btnSave = new Button { Text = "Save && Apply", AutoSize = true };
+        var gbSql = MakeGroupBox("🗄  SQL Server Connection", sqlGrid);
+        var gbTally = MakeGroupBox("📇  Tally Connection", tallyGrid);
+        var gbSchedCfg = MakeGroupBox("🕐  Schedule && Startup", schedCfgGrid);
+        var gbLicense = MakeGroupBox("🔑  License", licenseGrid);
+        gbLicense.ForeColor = UiTheme.Warning;
+
+        int row = 0;
+        outer.Controls.Add(gbSql, 0, row);
+        outer.Controls.Add(gbTally, 1, row); row++;
+        outer.Controls.Add(gbSchedCfg, 0, row);
+        outer.Controls.Add(gbLicense, 1, row); row++;
+
+        var btnSave = new Button { Text = "💾  Save && Apply", AutoSize = true };
+        UiTheme.StyleButton(btnSave, UiTheme.Success);
         btnSave.Click += BtnSaveConfig_Click;
-
         _lblConfigMsg.AutoSize = true;
-        _lblConfigMsg.ForeColor = Color.Green;
+        _lblConfigMsg.ForeColor = UiTheme.Success;
+        _lblConfigMsg.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
+        _lblConfigMsg.Margin = new Padding(12, 8, 0, 0);
 
-        var r2 = panel.RowCount;
-        panel.RowCount = r2 + 1;
-        panel.Controls.Add(btnSave, 1, r2);
-        var r3 = panel.RowCount;
-        panel.RowCount = r3 + 1;
-        panel.Controls.Add(_lblConfigMsg, 1, r3);
+        var saveRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Margin = new Padding(10) };
+        saveRow.Controls.Add(btnSave);
+        saveRow.Controls.Add(_lblConfigMsg);
+        outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        outer.Controls.Add(saveRow, 0, row);
+        outer.SetColumnSpan(saveRow, 2);
 
-        page.Controls.Add(panel);
+        page.Controls.Add(outer);
     }
 
     private void BuildLogsTab(TabPage page)
@@ -246,12 +394,25 @@ public class FrmMain : Form
         _txtLogs.Dock = DockStyle.Fill;
         _txtLogs.Font = new Font("Consolas", 9);
         _txtLogs.WordWrap = false;
+        _txtLogs.BackColor = Color.FromArgb(30, 30, 30);
+        _txtLogs.ForeColor = Color.Gainsboro;
+        _txtLogs.BorderStyle = BorderStyle.None;
 
-        var btnClear = new Button { Text = "Clear", Dock = DockStyle.Top, AutoSize = true };
+        var btnClear = new Button { Text = "🗑  Clear", AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
+        UiTheme.StyleButton(btnClear, UiTheme.TextMuted);
         btnClear.Click += (_, _) => _txtLogs.Clear();
 
-        page.Controls.Add(_txtLogs);
-        page.Controls.Add(btnClear);
+        var top = new Panel { Dock = DockStyle.Top, Height = 46, BackColor = UiTheme.Background };
+        top.Controls.Add(btnClear);
+
+        var logHolder = new Panel { Dock = DockStyle.Fill, Padding = new Padding(1), BackColor = UiTheme.Border };
+        logHolder.Controls.Add(_txtLogs);
+
+        var wrap = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16), BackColor = UiTheme.Background };
+        wrap.Controls.Add(logHolder);
+        wrap.Controls.Add(top);
+
+        page.Controls.Add(wrap);
     }
 
     private void BuildTrayIcon()
@@ -272,7 +433,7 @@ public class FrmMain : Form
     private void RestoreFromTray()
     {
         Show();
-        WindowState = FormWindowState.Normal;
+        WindowState = FormWindowState.Maximized;
         Activate();
     }
 
@@ -305,6 +466,61 @@ public class FrmMain : Form
         _numOrderInterval.Value = Math.Clamp(_config.OrderPushIntervalMinutes, 1, 1440);
         _chkStartMinimized.Checked = _config.StartMinimized;
         _chkAutoStart.Checked = _config.AutoStartWithWindows;
+
+        RefreshLicenseDisplay();
+    }
+
+    private void RefreshLicenseDisplay()
+    {
+        var key = LicenseService.GetLicenseKey(_config);
+        _lblLicenseKeyMasked.Text = string.IsNullOrEmpty(key) ? "(none activated)" : LicenseKeyMask.Mask(key);
+
+        _ = RefreshLicenseStatusAsync();
+    }
+
+    private async Task RefreshLicenseStatusAsync()
+    {
+        var result = await _licenseSvc.CheckAsync(_config);
+        if (InvokeRequired) { BeginInvoke(() => ApplyLicenseStatus(result)); return; }
+        ApplyLicenseStatus(result);
+    }
+
+    private void ApplyLicenseStatus(LicenseValidationResult result)
+    {
+        var color = result.IsValid ? UiTheme.Success : UiTheme.Danger;
+        var text = result.IsValid
+            ? (result.IsTrial ? "Trial" : "Licensed") + (result.ExpiresOn.HasValue ? $" — expires {result.ExpiresOn.Value:dd MMM yyyy}" : "")
+            : result.Message;
+        _lblLicenseStatus.ForeColor = color;
+        _lblLicenseStatus.Text = "● " + text;
+    }
+
+    // A hard local reset — wipes the stored key and the offline-grace
+    // snapshot, then restarts the whole process so it goes through the
+    // normal Program.cs startup flow: license dialog only, FrmMain isn't
+    // created at all until activation succeeds. Doesn't touch the portal
+    // side (the key itself isn't deactivated there — MaxActivations still
+    // applies), this just clears *this machine's* local state so it behaves
+    // like a fresh, never-activated install.
+    private void ReactivateLicenseClicked()
+    {
+        var confirm = MessageBox.Show(
+            "This deactivates the license on this machine and restarts the agent at the activation screen. Continue?",
+            "Reactivate License",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+        if (confirm != DialogResult.Yes) return;
+
+        _config.LicenseKeyProtected = "";
+        _config.LicenseLastValidatedOnUtc = "";
+        _config.LicenseExpiresOnUtc = "";
+        _config.LicenseIsTrial = false;
+        _config.LicenseMachineId = "";
+        _configSvc.Save(_config);
+
+        _orchestrator.Stop();
+        _reallyExit = true; // let this Close() actually exit instead of minimizing to tray
+        Application.Restart();
     }
 
     private void BtnSaveConfig_Click(object? sender, EventArgs e)
@@ -325,10 +541,11 @@ public class FrmMain : Form
 
         _orchestrator.Stop();
         _orchestrator.Start(_config);
-        _btnStartStop.Text = "Stop Agent";
+        _btnStartStop.Text = "⏹  Stop Agent";
+        UiTheme.StyleButton(_btnStartStop, UiTheme.Danger);
 
-        _lblConfigMsg.ForeColor = Color.Green;
-        _lblConfigMsg.Text = $"Saved and applied at {DateTime.Now:HH:mm:ss}.";
+        _lblConfigMsg.ForeColor = UiTheme.Success;
+        _lblConfigMsg.Text = $"✓ Saved and applied at {DateTime.Now:HH:mm:ss}.";
         _logger.Info("Configuration saved and agent restarted with new settings.");
     }
 
@@ -337,12 +554,14 @@ public class FrmMain : Form
         if (_orchestrator.IsRunning)
         {
             _orchestrator.Stop();
-            _btnStartStop.Text = "Start Agent";
+            _btnStartStop.Text = "▶  Start Agent";
+            UiTheme.StyleButton(_btnStartStop, UiTheme.Success);
         }
         else
         {
             _orchestrator.Start(_config);
-            _btnStartStop.Text = "Stop Agent";
+            _btnStartStop.Text = "⏹  Stop Agent";
+            UiTheme.StyleButton(_btnStartStop, UiTheme.Danger);
         }
     }
 
@@ -357,16 +576,16 @@ public class FrmMain : Form
     {
         var cfg = CurrentFormConfig();
         var (ok, msg) = await _orchestrator.TestSqlAsync(cfg);
-        _lblSqlStatus.Text = $"SQL: {(ok ? "connected" : "failed")} — {msg}";
-        _lblSqlStatus.ForeColor = ok ? Color.Green : Color.Red;
+        _lblSqlStatus.Text = $"● SQL: {(ok ? "connected" : "failed")} — {msg}";
+        _lblSqlStatus.ForeColor = ok ? UiTheme.Success : UiTheme.Danger;
     }
 
     private async Task TestTallyClicked()
     {
         var cfg = CurrentFormConfig();
         var (ok, msg) = await _orchestrator.TestTallyAsync(cfg);
-        _lblTallyStatus.Text = $"Tally: {(ok ? "reachable" : "unreachable")} — {msg}";
-        _lblTallyStatus.ForeColor = ok ? Color.Green : Color.Red;
+        _lblTallyStatus.Text = $"● Tally: {(ok ? "reachable" : "unreachable")} — {msg}";
+        _lblTallyStatus.ForeColor = ok ? UiTheme.Success : UiTheme.Danger;
     }
 
     // Builds a config snapshot from whatever's currently typed in the
@@ -386,7 +605,9 @@ public class FrmMain : Form
     {
         if (InvokeRequired) { BeginInvoke(() => UpdateStatus(e)); return; }
 
-        _lblRunState.Text = e.IsSyncing ? "Agent: syncing…" : (_orchestrator.IsRunning ? "Agent: running" : "Agent: stopped");
+        var running = _orchestrator.IsRunning;
+        _lblRunState.Text = "● " + (e.IsSyncing ? "Agent: syncing…" : (running ? "Agent: running" : "Agent: stopped"));
+        _lblRunState.ForeColor = e.IsSyncing ? UiTheme.Warning : (running ? UiTheme.Success : UiTheme.Danger);
         _lblLastMaster.Text = "Last master sync: " + (e.LastMasterSyncAt?.ToString("dd MMM, HH:mm:ss") ?? "never");
         _lblNextMaster.Text = "Next master sync: " + (e.NextMasterSyncAt?.ToString("dd MMM, HH:mm:ss") ?? "—");
         _lblLastOrder.Text = "Last order cycle: " + (e.LastOrderCycleAt?.ToString("dd MMM, HH:mm:ss") ?? "never");

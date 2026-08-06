@@ -30,10 +30,14 @@ public class AgentConfig
     // Groundwork for a later feature: pulling a Tally Collection report
     // (e.g. StockItemAggr_By) and pushing/altering it into a SQL table on
     // every sync cycle. Not wired to any sync logic yet — just a place for
-    // the connection string to live once that part is built. DPAPI-protected
-    // the same way ApiKeyProtected is, since a connection string commonly
-    // carries a SQL password.
-    public string SqlConnectionStringProtected { get; set; } = "";
+    // the connection details to live once that part is built. Kept as
+    // separate fields (not one connection string) so the Config UI can offer
+    // a proper Server/Database/UID/Password form with a Test Connection
+    // button; only the password is sensitive enough to DPAPI-protect.
+    public string SqlServer { get; set; } = "";
+    public string SqlDatabase { get; set; } = "";
+    public string SqlUserId { get; set; } = "";
+    public string SqlPasswordProtected { get; set; } = "";
 
     // License activation state — see Services/LicenseService.cs. Key is
     // DPAPI-protected like the API key; the rest is the offline-grace-period

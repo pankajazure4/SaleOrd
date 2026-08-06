@@ -1,4 +1,5 @@
 using System.Reflection;
+using Microsoft.Data.SqlClient;
 using Microsoft.Win32;
 using SalesPush.SyncAgent.Licensing;
 using SalesPush.SyncAgent.Models;
@@ -45,12 +46,19 @@ public class FrmMain : Form
     private Label _lblLicenseKeyMasked = new();
 
     // Database section (Config tab) — groundwork only, see AgentConfig.cs
-    private TextBox _txtSqlConnectionString = new();
+    private TextBox _txtSqlServer = new();
+    private TextBox _txtSqlDatabase = new();
+    private TextBox _txtSqlUserId = new();
+    private TextBox _txtSqlPassword = new();
+    private Label _lblSqlStatus = new();
+    private Button _btnTestSql = new();
 
     // Logs tab
     private TextBox _txtLogs = new();
 
     private NotifyIcon _trayIcon = new();
+
+    private const int FieldWidth = 300;
 
     public FrmMain()
     {
@@ -60,11 +68,11 @@ public class FrmMain : Form
 
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
         Text = $"SalesPush Sync Agent — v{version}";
-        Width = 900;
-        Height = 700;
+        Width = 1000;
+        Height = 720;
         StartPosition = FormStartPosition.CenterScreen;
         WindowState = FormWindowState.Maximized;
-        MinimumSize = new Size(760, 560);
+        MinimumSize = new Size(820, 600);
         BackColor = UiTheme.Background;
         Font = new Font("Segoe UI", 9.5f);
 
@@ -102,6 +110,15 @@ public class FrmMain : Form
     }
 
     // ── UI construction ──────────────────────────────────────────────────
+    //
+    // Everything here is built with native GroupBox containers (title +
+    // border for free, no custom Paint/owner-draw needed) arranged in a
+    // 2-column TableLayoutPanel grid. An earlier version used a
+    // FlowLayoutPanel with Dock=Top children and absolutely-positioned
+    // inner controls — that combination doesn't lay out reliably in
+    // WinForms (the Status tab rendered blank), so every tab now follows
+    // this one, reliable pattern: TableLayoutPanel grid of GroupBoxes, each
+    // GroupBox containing a small label/control TableLayoutPanel of its own.
 
     private void BuildUi()
     {
@@ -119,218 +136,333 @@ public class FrmMain : Form
         tabs.TabPages.Add(tabConfig);
         tabs.TabPages.Add(tabLogs);
 
+        // A bottom bar outside the TabControl — not tied to any one tab, so
+        // "Exit" (and anything else that belongs everywhere) stays reachable
+        // no matter which tab is open, without hunting for the tray icon.
+        var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 52, BackColor = UiTheme.Card, Padding = new Padding(16, 8, 16, 8) };
+        bottomBar.Paint += (_, e) => e.Graphics.DrawLine(new Pen(UiTheme.Border), 0, 0, bottomBar.Width, 0);
+
+        var btnExit = new Button { Text = "✕  Exit", AutoSize = true, Anchor = AnchorStyles.Right | AnchorStyles.Top };
+        UiTheme.StyleButton(btnExit, UiTheme.Danger);
+        btnExit.Location = new Point(bottomBar.Width - btnExit.PreferredSize.Width - 16, 8);
+        btnExit.Click += (_, _) => { _reallyExit = true; Close(); };
+        bottomBar.Controls.Add(btnExit);
+        bottomBar.Resize += (_, _) => btnExit.Location = new Point(bottomBar.Width - btnExit.Width - 16, 8);
+
+        var lblHint = new Label
+        {
+            Text = "Closing the window minimizes to tray and keeps syncing — use Exit to fully quit.",
+            AutoSize = true,
+            ForeColor = UiTheme.TextMuted,
+            Font = new Font("Segoe UI", 8.5f),
+            Location = new Point(0, 16)
+        };
+        bottomBar.Controls.Add(lblHint);
+
+        // Dock order matters: Dock=Bottom must be added before Dock=Fill, or
+        // the Fill control (tabs) claims the whole client area first and
+        // leaves nothing for the bottom bar to dock into.
+        Controls.Add(bottomBar);
         Controls.Add(tabs);
+    }
+
+    private static GroupBox MakeGroupBox(string title, Control content)
+    {
+        // Dock=Top (not Fill) + AutoSize=true is deliberate: a TableLayoutPanel
+        // row set to AutoSize measures a Dock=Fill child as "however big the
+        // cell already is" (circular — it never grows the row), which is why
+        // every GroupBox was clipping its own content. Dock=Top instead lets
+        // the GroupBox report its true preferred height (stretching only to
+        // the cell's width), so the AutoSize row actually grows to fit it.
+        var gb = new GroupBox
+        {
+            Text = title,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+            ForeColor = UiTheme.Primary,
+            Padding = new Padding(12, 8, 12, 12),
+            Margin = new Padding(10)
+        };
+        content.Dock = DockStyle.Top;
+        content.Font = new Font("Segoe UI", 9.5f, FontStyle.Regular);
+        gb.Controls.Add(content);
+        return gb;
+    }
+
+    private static TableLayoutPanel MakeFieldGrid()
+    {
+        var p = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true, GrowStyle = TableLayoutPanelGrowStyle.AddRows };
+        p.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+        p.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        return p;
+    }
+
+    // Field controls get a fixed pixel width and stay left-anchored rather
+    // than Dock=Fill — otherwise a textbox stretches to whatever its
+    // container happens to be (which looked huge when every field spanned
+    // the full window width).
+    private static void AddField(TableLayoutPanel p, string label, Control control, ContentAlignment align = ContentAlignment.MiddleLeft)
+    {
+        var r = p.RowCount;
+        p.RowCount = r + 1;
+        control.Anchor = AnchorStyles.Left;
+        if (control is TextBox tb)
+        {
+            tb.Width = FieldWidth;
+            tb.BorderStyle = BorderStyle.FixedSingle;
+            tb.Margin = new Padding(0, 4, 0, 4);
+        }
+        p.Controls.Add(new Label { Text = label, AutoSize = true, TextAlign = align, Anchor = AnchorStyles.Left, ForeColor = UiTheme.TextDark }, 0, r);
+        p.Controls.Add(control, 1, r);
     }
 
     private void BuildStatusTab(TabPage page)
     {
-        var card = UiTheme.CreateCard("⚡  Agent Control");
-        card.Dock = DockStyle.Top;
-        card.Height = 150;
-        card.Margin = new Padding(16);
+        var outer = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            AutoScroll = true,
+            Padding = new Padding(10),
+            BackColor = UiTheme.Background
+        };
+        outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
+        // Agent Control
+        var controlGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true };
         _lblRunState.Text = "● Agent: stopped";
         _lblRunState.AutoSize = true;
         _lblRunState.Font = new Font("Segoe UI", 12f, FontStyle.Bold);
         _lblRunState.ForeColor = UiTheme.Danger;
-        _lblRunState.Location = new Point(20, 50);
+        _lblRunState.Margin = new Padding(0, 4, 0, 12);
 
+        var btnRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
         _btnStartStop.Text = "▶  Start Agent";
         UiTheme.StyleButton(_btnStartStop, UiTheme.Success);
-        _btnStartStop.Location = new Point(20, 90);
         _btnStartStop.Click += BtnStartStop_Click;
-
         _btnPushNow.Text = "⬆  Push Now";
         UiTheme.StyleButton(_btnPushNow, UiTheme.Primary);
-        _btnPushNow.Location = new Point(_btnStartStop.Right + 12, 90);
+        _btnPushNow.Margin = new Padding(10, 0, 0, 0);
         _btnPushNow.Click += async (_, _) => await PushNowClicked();
+        btnRow.Controls.Add(_btnStartStop);
+        btnRow.Controls.Add(_btnPushNow);
 
-        card.Controls.Add(_lblRunState);
-        card.Controls.Add(_btnStartStop);
-        card.Controls.Add(_btnPushNow);
+        controlGrid.Controls.Add(_lblRunState, 0, 0);
+        controlGrid.Controls.Add(btnRow, 0, 1);
 
-        var cardConn = UiTheme.CreateCard("🔌  Connections");
-        cardConn.Dock = DockStyle.Top;
-        cardConn.Height = 150;
-        cardConn.Margin = new Padding(16, 0, 16, 16);
+        // Connections — a dedicated [button | message] grid, not the shared
+        // label/value MakeFieldGrid (which was causing this: AddField put
+        // the button in column 1, then the status label got added to that
+        // *same* column-1 cell on top of it — two controls sharing one
+        // TableLayoutPanel cell overlap instead of laying out side by side).
+        var connGrid = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, AutoSize = true, GrowStyle = TableLayoutPanelGrowStyle.AddRows };
+        connGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+        connGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        var btnTestApi = new Button { Text = "Test API", Location = new Point(20, 54) };
+        var btnTestApi = new Button { Text = "Test API", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 0, 6) };
         UiTheme.StyleButton(btnTestApi, UiTheme.Info);
         btnTestApi.Click += async (_, _) => await TestApiClicked();
-
         _lblApiStatus = UiTheme.StatusChip("API: unknown", UiTheme.TextMuted);
-        _lblApiStatus.Location = new Point(btnTestApi.Right + 16, 62);
+        _lblApiStatus.Anchor = AnchorStyles.Left;
+        _lblApiStatus.Margin = new Padding(12, 12, 0, 6);
+        connGrid.Controls.Add(btnTestApi, 0, 0);
+        connGrid.Controls.Add(_lblApiStatus, 1, 0);
 
-        var btnTestTally = new Button { Text = "Test Tally", Location = new Point(20, 96) };
+        var btnTestTally = new Button { Text = "Test Tally", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 0, 6) };
         UiTheme.StyleButton(btnTestTally, UiTheme.Info);
         btnTestTally.Click += async (_, _) => await TestTallyClicked();
-
         _lblTallyStatus = UiTheme.StatusChip("Tally: unknown", UiTheme.TextMuted);
-        _lblTallyStatus.Location = new Point(btnTestTally.Right + 16, 104);
+        _lblTallyStatus.Anchor = AnchorStyles.Left;
+        _lblTallyStatus.Margin = new Padding(12, 12, 0, 6);
+        connGrid.Controls.Add(btnTestTally, 0, 1);
+        connGrid.Controls.Add(_lblTallyStatus, 1, 1);
 
-        cardConn.Controls.Add(btnTestApi);
-        cardConn.Controls.Add(_lblApiStatus);
-        cardConn.Controls.Add(btnTestTally);
-        cardConn.Controls.Add(_lblTallyStatus);
-
-        var cardSchedule = UiTheme.CreateCard("🕐  Schedule");
-        cardSchedule.Dock = DockStyle.Top;
-        cardSchedule.Height = 130;
-        cardSchedule.Margin = new Padding(16, 0, 16, 16);
-
+        // Schedule
+        var schedGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true };
         _lblLastPush.Text = "Last push cycle: never";
         _lblLastPush.AutoSize = true;
-        _lblLastPush.Location = new Point(20, 54);
-
+        _lblLastPush.Margin = new Padding(0, 2, 0, 6);
         _lblNextPush.Text = "Next push cycle: —";
         _lblNextPush.AutoSize = true;
-        _lblNextPush.Location = new Point(20, 80);
-
+        _lblNextPush.Margin = new Padding(0, 0, 0, 12);
         var lblLogPath = new Label
         {
             Text = "Log file: " + ConfigService.LogFilePath,
             AutoSize = true,
             ForeColor = UiTheme.TextMuted,
-            Font = new Font("Segoe UI", 8f),
-            Location = new Point(20, 106)
+            Font = new Font("Segoe UI", 8f)
         };
+        schedGrid.Controls.Add(_lblLastPush, 0, 0);
+        schedGrid.Controls.Add(_lblNextPush, 0, 1);
+        schedGrid.Controls.Add(lblLogPath, 0, 2);
 
-        cardSchedule.Controls.Add(_lblLastPush);
-        cardSchedule.Controls.Add(_lblNextPush);
-        cardSchedule.Controls.Add(lblLogPath);
+        var gbControl = MakeGroupBox("⚡  Agent Control", controlGrid);
+        var gbConn = MakeGroupBox("🔌  Connections", connGrid);
+        var gbSched = MakeGroupBox("🕐  Schedule", schedGrid);
 
-        var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
-        flow.Controls.Add(card);
-        flow.Controls.Add(cardConn);
-        flow.Controls.Add(cardSchedule);
-        card.Width = cardConn.Width = cardSchedule.Width = 620;
+        outer.Controls.Add(gbControl, 0, 0);
+        outer.Controls.Add(gbConn, 1, 0);
+        outer.Controls.Add(gbSched, 0, 1);
+        outer.SetColumnSpan(gbSched, 2);
 
-        page.Controls.Add(flow);
+        page.Controls.Add(outer);
     }
 
     private void BuildConfigTab(TabPage page)
     {
-        var panel = new TableLayoutPanel
+        var outer = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            Padding = new Padding(20),
-            AutoSize = true,
             AutoScroll = true,
+            Padding = new Padding(10),
             BackColor = UiTheme.Background
         };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        for (int i = 0; i < 5; i++) outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        void AddRow(string label, Control control)
-        {
-            var r = panel.RowCount;
-            panel.RowCount = r + 1;
-            control.Dock = DockStyle.Fill;
-            if (control is TextBox tb)
-            {
-                tb.BorderStyle = BorderStyle.FixedSingle;
-                tb.BackColor = Color.White;
-                tb.Margin = new Padding(0, 4, 0, 4);
-            }
-            panel.Controls.Add(new Label { Text = label, AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Left, ForeColor = UiTheme.TextDark }, 0, r);
-            panel.Controls.Add(control, 1, r);
-        }
-
-        void AddSectionHeader(string text, Color color, bool first = false)
-        {
-            var r = panel.RowCount;
-            panel.RowCount = r + 1;
-            var lbl = new Label
-            {
-                Text = text,
-                AutoSize = true,
-                Font = new Font("Segoe UI", 11f, FontStyle.Bold),
-                ForeColor = color,
-                Margin = new Padding(0, first ? 0 : 22, 0, 8)
-            };
-            panel.Controls.Add(lbl, 0, r);
-            panel.SetColumnSpan(lbl, 2);
-        }
-
-        _txtApiBaseUrl.Width = 380;
-        _txtApiKey.Width = 380;
+        // Sales API
+        var apiGrid = MakeFieldGrid();
+        AddField(apiGrid, "Base URL", _txtApiBaseUrl);
         _txtApiKey.UseSystemPasswordChar = true;
-        _txtTallyUrl.Width = 380;
-        _txtSalesLedger.Width = 380;
-        _txtIgstLedger.Width = 380;
-        _txtCgstLedger.Width = 380;
-        _txtSgstLedger.Width = 380;
-        _txtRoundOffLedger.Width = 380;
-        _txtVoucherType.Width = 380;
-        _txtBatchName.Width = 380;
-        _txtSqlConnectionString.Width = 380;
-        _txtSqlConnectionString.UseSystemPasswordChar = true;
-        _txtSqlConnectionString.PlaceholderText = "(not configured yet — groundwork for a later feature)";
+        AddField(apiGrid, "API key", _txtApiKey);
 
+        // Tally Connection
+        var tallyGrid = MakeFieldGrid();
+        AddField(tallyGrid, "Tally URL", _txtTallyUrl);
+
+        // Ledger Mapping (its own 4-column sub-grid: label,field,label,field)
+        var ledgerGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, AutoSize = true };
+        ledgerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+        ledgerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        ledgerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+        ledgerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        void AddLedgerPair(string l1, Control c1, string l2, Control c2)
+        {
+            var r = ledgerGrid.RowCount;
+            ledgerGrid.RowCount = r + 1;
+            foreach (var c in new[] { c1, c2 })
+            {
+                if (c is TextBox tb) { tb.Width = 190; tb.BorderStyle = BorderStyle.FixedSingle; tb.Anchor = AnchorStyles.Left; tb.Margin = new Padding(0, 4, 8, 4); }
+            }
+            ledgerGrid.Controls.Add(new Label { Text = l1, AutoSize = true, Anchor = AnchorStyles.Left }, 0, r);
+            ledgerGrid.Controls.Add(c1, 1, r);
+            ledgerGrid.Controls.Add(new Label { Text = l2, AutoSize = true, Anchor = AnchorStyles.Left }, 2, r);
+            ledgerGrid.Controls.Add(c2, 3, r);
+        }
+        AddLedgerPair("Sales", _txtSalesLedger, "IGST", _txtIgstLedger);
+        AddLedgerPair("CGST", _txtCgstLedger, "SGST", _txtSgstLedger);
+        AddLedgerPair("Round off", _txtRoundOffLedger, "Voucher type", _txtVoucherType);
+        AddLedgerPair("Batch name", _txtBatchName, "", new Label());
+
+        // Schedule & Startup
+        var schedGrid = MakeFieldGrid();
         _numPushInterval.Minimum = 1;
         _numPushInterval.Maximum = 1440;
         _numPushInterval.Value = 3;
         _numPushInterval.Width = 100;
+        AddField(schedGrid, "Interval (min)", _numPushInterval);
+        AddField(schedGrid, "Start minimized", _chkStartMinimized);
+        AddField(schedGrid, "Start with Windows", _chkAutoStart);
 
-        AddSectionHeader("🌐  Sales API", UiTheme.Primary, first: true);
-        AddRow("Sales API base URL", _txtApiBaseUrl);
-        AddRow("API key", _txtApiKey);
-
-        AddSectionHeader("📇  Tally Connection", UiTheme.Primary);
-        AddRow("Local Tally URL", _txtTallyUrl);
-
-        AddSectionHeader("🧾  Ledger Mapping", UiTheme.Primary);
-        AddRow("Sales ledger", _txtSalesLedger);
-        AddRow("IGST ledger", _txtIgstLedger);
-        AddRow("CGST ledger", _txtCgstLedger);
-        AddRow("SGST ledger", _txtSgstLedger);
-        AddRow("Round off ledger", _txtRoundOffLedger);
-        AddRow("Voucher type", _txtVoucherType);
-        AddRow("Batch name", _txtBatchName);
-
-        AddSectionHeader("🕐  Schedule && Startup", UiTheme.Primary);
-        AddRow("Push interval (min)", _numPushInterval);
-        AddRow("Start minimized to tray", _chkStartMinimized);
-        AddRow("Start with Windows", _chkAutoStart);
-
-        // ── License ──────────────────────────────────────────────────────
-        AddSectionHeader("🔑  License", UiTheme.Warning);
-
-        _lblLicenseKeyMasked.Text = "(none activated)";
+        // License
+        var licenseGrid = MakeFieldGrid();
         _lblLicenseKeyMasked.AutoSize = true;
         _lblLicenseKeyMasked.Font = new Font("Consolas", 9.5f);
-        AddRow("Current key", _lblLicenseKeyMasked);
-
+        _lblLicenseKeyMasked.Text = "(none activated)";
+        AddField(licenseGrid, "Current key", _lblLicenseKeyMasked);
         _lblLicenseStatus = UiTheme.StatusChip("Unknown", UiTheme.TextMuted);
-        AddRow("Status", _lblLicenseStatus);
+        AddField(licenseGrid, "Status", _lblLicenseStatus);
+        var btnReactivateLicense = new Button { Text = "🔄  Reactivate License", AutoSize = true };
+        UiTheme.StyleButton(btnReactivateLicense, UiTheme.Warning);
+        btnReactivateLicense.Click += (_, _) => ReactivateLicenseClicked();
+        AddField(licenseGrid, "", btnReactivateLicense);
 
-        var btnChangeLicense = new Button { Text = "Change License Key", AutoSize = true };
-        UiTheme.StyleButton(btnChangeLicense, UiTheme.Warning);
-        btnChangeLicense.Click += (_, _) => ChangeLicenseClicked();
-        AddRow("", btnChangeLicense);
+        // Database (groundwork only — see AgentConfig.cs)
+        var dbGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, AutoSize = true };
+        dbGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+        dbGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        dbGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+        dbGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        void AddDbPair(string l1, Control c1, string l2, Control c2)
+        {
+            var r = dbGrid.RowCount;
+            dbGrid.RowCount = r + 1;
+            foreach (var c in new[] { c1, c2 })
+            {
+                if (c is TextBox tb) { tb.Width = 190; tb.BorderStyle = BorderStyle.FixedSingle; tb.Anchor = AnchorStyles.Left; tb.Margin = new Padding(0, 4, 8, 4); }
+            }
+            dbGrid.Controls.Add(new Label { Text = l1, AutoSize = true, Anchor = AnchorStyles.Left }, 0, r);
+            dbGrid.Controls.Add(c1, 1, r);
+            dbGrid.Controls.Add(new Label { Text = l2, AutoSize = true, Anchor = AnchorStyles.Left }, 2, r);
+            dbGrid.Controls.Add(c2, 3, r);
+        }
+        _txtSqlPassword.UseSystemPasswordChar = true;
+        AddDbPair("Server", _txtSqlServer, "Database", _txtSqlDatabase);
+        AddDbPair("User ID", _txtSqlUserId, "Password", _txtSqlPassword);
 
-        // ── Database (groundwork only — see AgentConfig.cs) ────────────────
-        AddSectionHeader("🗄  Database (optional — for a future report-sync feature)", UiTheme.Info);
-        AddRow("SQL connection string", _txtSqlConnectionString);
+        _btnTestSql.Text = "Test Connection";
+        UiTheme.StyleButton(_btnTestSql, UiTheme.Info);
+        _btnTestSql.Click += async (_, _) => await TestSqlClicked();
+        _lblSqlStatus = UiTheme.StatusChip("Not tested", UiTheme.TextMuted);
+        var rDb = dbGrid.RowCount;
+        dbGrid.RowCount = rDb + 1;
+        dbGrid.Controls.Add(_btnTestSql, 1, rDb);
+        dbGrid.Controls.Add(_lblSqlStatus, 3, rDb);
+        var lblDbNote = new Label
+        {
+            Text = "Not used yet — groundwork for a future report-sync feature.",
+            AutoSize = true,
+            ForeColor = UiTheme.TextMuted,
+            Font = new Font("Segoe UI", 8f),
+            Margin = new Padding(0, 8, 0, 0)
+        };
+        var rNote = dbGrid.RowCount;
+        dbGrid.RowCount = rNote + 1;
+        dbGrid.Controls.Add(lblDbNote, 0, rNote);
+        dbGrid.SetColumnSpan(lblDbNote, 4);
+
+        var gbApi = MakeGroupBox("🌐  Sales API", apiGrid);
+        var gbTally = MakeGroupBox("📇  Tally Connection", tallyGrid);
+        var gbLedger = MakeGroupBox("🧾  Ledger Mapping", ledgerGrid);
+        var gbSched = MakeGroupBox("🕐  Schedule && Startup", schedGrid);
+        var gbLicense = MakeGroupBox("🔑  License", licenseGrid);
+        gbLicense.ForeColor = UiTheme.Warning;
+        var gbDb = MakeGroupBox("🗄  Database (optional)", dbGrid);
+        gbDb.ForeColor = UiTheme.Info;
+
+        int row = 0;
+        outer.Controls.Add(gbApi, 0, row);
+        outer.Controls.Add(gbTally, 1, row); row++;
+        outer.Controls.Add(gbLedger, 0, row);
+        outer.SetColumnSpan(gbLedger, 2); row++;
+        outer.Controls.Add(gbSched, 0, row);
+        outer.Controls.Add(gbLicense, 1, row); row++;
+        outer.Controls.Add(gbDb, 0, row);
+        outer.SetColumnSpan(gbDb, 2); row++;
 
         var btnSave = new Button { Text = "💾  Save && Apply", AutoSize = true };
         UiTheme.StyleButton(btnSave, UiTheme.Success);
         btnSave.Click += BtnSaveConfig_Click;
-
         _lblConfigMsg.AutoSize = true;
         _lblConfigMsg.ForeColor = UiTheme.Success;
         _lblConfigMsg.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
+        _lblConfigMsg.Margin = new Padding(12, 8, 0, 0);
 
-        var r2 = panel.RowCount;
-        panel.RowCount = r2 + 1;
-        panel.Controls.Add(btnSave, 1, r2);
-        panel.Controls[panel.Controls.Count - 1].Margin = new Padding(0, 20, 0, 6);
-        var r3 = panel.RowCount;
-        panel.RowCount = r3 + 1;
-        panel.Controls.Add(_lblConfigMsg, 1, r3);
+        var saveRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Margin = new Padding(10) };
+        saveRow.Controls.Add(btnSave);
+        saveRow.Controls.Add(_lblConfigMsg);
+        outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        outer.Controls.Add(saveRow, 0, row);
+        outer.SetColumnSpan(saveRow, 2);
 
-        page.Controls.Add(panel);
+        page.Controls.Add(outer);
     }
 
     private void BuildLogsTab(TabPage page)
@@ -345,13 +477,19 @@ public class FrmMain : Form
         _txtLogs.ForeColor = Color.Gainsboro;
         _txtLogs.BorderStyle = BorderStyle.None;
 
-        var btnClear = new Button { Text = "🗑  Clear", Dock = DockStyle.Top, AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
+        var btnClear = new Button { Text = "🗑  Clear", AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
         UiTheme.StyleButton(btnClear, UiTheme.TextMuted);
         btnClear.Click += (_, _) => _txtLogs.Clear();
 
+        var top = new Panel { Dock = DockStyle.Top, Height = 46, BackColor = UiTheme.Background };
+        top.Controls.Add(btnClear);
+
+        var logHolder = new Panel { Dock = DockStyle.Fill, Padding = new Padding(1), BackColor = UiTheme.Border };
+        logHolder.Controls.Add(_txtLogs);
+
         var wrap = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16), BackColor = UiTheme.Background };
-        wrap.Controls.Add(_txtLogs);
-        wrap.Controls.Add(btnClear);
+        wrap.Controls.Add(logHolder);
+        wrap.Controls.Add(top);
 
         page.Controls.Add(wrap);
     }
@@ -410,7 +548,10 @@ public class FrmMain : Form
         _numPushInterval.Value = Math.Clamp(_config.PushIntervalMinutes, 1, 1440);
         _chkStartMinimized.Checked = _config.StartMinimized;
         _chkAutoStart.Checked = _config.AutoStartWithWindows;
-        _txtSqlConnectionString.Text = ConfigService.Unprotect(_config.SqlConnectionStringProtected);
+        _txtSqlServer.Text = _config.SqlServer;
+        _txtSqlDatabase.Text = _config.SqlDatabase;
+        _txtSqlUserId.Text = _config.SqlUserId;
+        _txtSqlPassword.Text = ConfigService.Unprotect(_config.SqlPasswordProtected);
 
         RefreshLicenseDisplay();
     }
@@ -440,11 +581,42 @@ public class FrmMain : Form
         _lblLicenseStatus.Text = "● " + text;
     }
 
-    private void ChangeLicenseClicked()
+    // A hard local reset — wipes the stored key and the offline-grace
+    // snapshot, then restarts the whole process so it goes through the
+    // normal Program.cs startup flow: license dialog only, FrmMain isn't
+    // created at all until activation succeeds. Doesn't touch the portal
+    // side (the key itself isn't deactivated there — MaxActivations still
+    // applies), this just clears *this machine's* local state so it behaves
+    // like a fresh, never-activated install. Useful before moving the
+    // install to another machine, or to force a clean re-activation if
+    // something local got stuck.
+    //
+    // Earlier version opened FrmLicense as a dialog *from inside FrmMain*
+    // instead of restarting — that left the Status/Config/Logs window
+    // sitting open behind the license prompt, which isn't the same thing as
+    // "the app is now unlicensed" (the agent was stopped, but the window
+    // and everything else was still right there). A full process restart is
+    // the only way to actually land on "just the license prompt, nothing
+    // else running" — the same state a fresh install would be in.
+    private void ReactivateLicenseClicked()
     {
-        using var frm = new FrmLicense(_licenseSvc, _config);
-        frm.ShowDialog(this);
-        RefreshLicenseDisplay();
+        var confirm = MessageBox.Show(
+            "This deactivates the license on this machine and restarts the agent at the activation screen. Continue?",
+            "Reactivate License",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+        if (confirm != DialogResult.Yes) return;
+
+        _config.LicenseKeyProtected = "";
+        _config.LicenseLastValidatedOnUtc = "";
+        _config.LicenseExpiresOnUtc = "";
+        _config.LicenseIsTrial = false;
+        _config.LicenseMachineId = "";
+        _configSvc.Save(_config);
+
+        _orchestrator.Stop();
+        _reallyExit = true; // let this Close() actually exit instead of minimizing to tray
+        Application.Restart();
     }
 
     private void BtnSaveConfig_Click(object? sender, EventArgs e)
@@ -462,7 +634,10 @@ public class FrmMain : Form
         _config.PushIntervalMinutes = (int)_numPushInterval.Value;
         _config.StartMinimized = _chkStartMinimized.Checked;
         _config.AutoStartWithWindows = _chkAutoStart.Checked;
-        _config.SqlConnectionStringProtected = ConfigService.Protect(_txtSqlConnectionString.Text.Trim());
+        _config.SqlServer = _txtSqlServer.Text.Trim();
+        _config.SqlDatabase = _txtSqlDatabase.Text.Trim();
+        _config.SqlUserId = _txtSqlUserId.Text.Trim();
+        _config.SqlPasswordProtected = ConfigService.Protect(_txtSqlPassword.Text);
 
         _configSvc.Save(_config);
         SetAutoStart(_config.AutoStartWithWindows);
@@ -514,6 +689,41 @@ public class FrmMain : Form
         var (ok, msg) = await _orchestrator.TestTallyAsync(cfg);
         _lblTallyStatus.Text = $"● Tally: {(ok ? "reachable" : "unreachable")} — {msg}";
         _lblTallyStatus.ForeColor = ok ? UiTheme.Success : UiTheme.Danger;
+    }
+
+    // Not wired to any sync feature yet (see AgentConfig.cs) — this just
+    // proves the entered credentials can actually open a connection, ahead
+    // of whatever gets built on top of them later.
+    private async Task TestSqlClicked()
+    {
+        _btnTestSql.Enabled = false;
+        _lblSqlStatus.ForeColor = UiTheme.TextMuted;
+        _lblSqlStatus.Text = "● Testing…";
+        try
+        {
+            var builder = new SqlConnectionStringBuilder
+            {
+                DataSource = _txtSqlServer.Text.Trim(),
+                InitialCatalog = _txtSqlDatabase.Text.Trim(),
+                UserID = _txtSqlUserId.Text.Trim(),
+                Password = _txtSqlPassword.Text,
+                TrustServerCertificate = true,
+                ConnectTimeout = 5
+            };
+            await using var conn = new SqlConnection(builder.ConnectionString);
+            await conn.OpenAsync();
+            _lblSqlStatus.ForeColor = UiTheme.Success;
+            _lblSqlStatus.Text = "● Connected";
+        }
+        catch (Exception ex)
+        {
+            _lblSqlStatus.ForeColor = UiTheme.Danger;
+            _lblSqlStatus.Text = "● Failed — " + ex.Message;
+        }
+        finally
+        {
+            _btnTestSql.Enabled = true;
+        }
     }
 
     // Builds a config snapshot from whatever's currently typed in the
