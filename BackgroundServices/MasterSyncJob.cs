@@ -181,6 +181,7 @@ public class MasterSyncJob : BackgroundService
                 ex.Parent = l.Parent;
                 ex.Address = l.Address;
                 ex.State = l.State;
+                ex.PinCode = l.PinCode;
                 ex.MobileNo = l.MobileNo;
                 ex.Email = l.Email;
                 ex.LedgerFax = l.LedgerFax;

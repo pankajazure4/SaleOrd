@@ -13,12 +13,14 @@ public class DashboardController : Controller
     private readonly AppDbContext _db;
     private readonly ActiveCompanyResolver _resolver;
     private readonly PermissionService _permSvc;
+    private readonly IConfiguration _config;
 
-    public DashboardController(AppDbContext db, ActiveCompanyResolver resolver, PermissionService permSvc)
+    public DashboardController(AppDbContext db, ActiveCompanyResolver resolver, PermissionService permSvc, IConfiguration config)
     {
         _db = db;
         _resolver = resolver;
         _permSvc = permSvc;
+        _config = config;
     }
 
     public async Task<IActionResult> Index()
@@ -28,6 +30,13 @@ public class DashboardController : Controller
 
         if (!await _permSvc.HasAsync(user.Role, AppPermissions.Dashboard))
             return Forbid();
+
+        // The manual "Sync" button only makes sense when the web app itself
+        // talks to Tally — once SaleOrd.SyncAgent is the only sync source
+        // (TallySync:Mode=Agent), clicking it would just be a no-op with a
+        // "delegated" message, which reads as broken rather than intentional.
+        // Hide it entirely in that mode instead.
+        ViewBag.IsAgentManaged = TallySyncMode.IsAgentManaged(_config);
 
         var query = _db.SaleOrders.Where(o => o.CompanyId == companyId);
         if (user.Role == AppRoles.Salesman)

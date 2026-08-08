@@ -119,13 +119,13 @@ public class SqlDataService
             if (existing.TryGetValue(name, out var id))
             {
                 await conn.ExecuteAsync(@"
-                    UPDATE Ledgers SET Parent=@Parent, Address=@Address, State=@State, MobileNo=@MobileNo,
+                    UPDATE Ledgers SET Parent=@Parent, Address=@Address, State=@State, PinCode=@PinCode, MobileNo=@MobileNo,
                         Email=@Email, LedgerFax=@LedgerFax, GSTNo=@GSTNo, TaxType=@TaxType,
                         IncomeTaxNo=@IncomeTaxNo, VATTINNo=@VATTINNo, CreditLimit=@CreditLimit, CreditPeriod=@CreditPeriod,
                         OpeningBalance=@OpeningBalance, ClosingBalance=@ClosingBalance,
                         GUID=@GUID, AlterId=@AlterId, LastSyncedAt=@LastSyncedAt
                     WHERE LedgerId=@LedgerId",
-                    new { l.Parent, l.Address, l.State, l.MobileNo, l.Email, l.LedgerFax, l.GSTNo, l.TaxType,
+                    new { l.Parent, l.Address, l.State, l.PinCode, l.MobileNo, l.Email, l.LedgerFax, l.GSTNo, l.TaxType,
                           l.IncomeTaxNo, l.VATTINNo, l.CreditLimit, l.CreditPeriod, l.OpeningBalance, l.ClosingBalance,
                           l.GUID, l.AlterId, l.LastSyncedAt, LedgerId = id }, tx);
                 updated++;
@@ -133,13 +133,13 @@ public class SqlDataService
             else
             {
                 await conn.ExecuteAsync(@"
-                    INSERT INTO Ledgers (LedgerName, Parent, Address, State, MobileNo, Email, LedgerFax,
+                    INSERT INTO Ledgers (LedgerName, Parent, Address, State, PinCode, MobileNo, Email, LedgerFax,
                         GSTNo, TaxType, IncomeTaxNo, VATTINNo, CreditLimit, CreditPeriod, OpeningBalance, ClosingBalance,
                         GUID, AlterId, CompanyId, LastSyncedAt)
-                    VALUES (@LedgerName, @Parent, @Address, @State, @MobileNo, @Email, @LedgerFax,
+                    VALUES (@LedgerName, @Parent, @Address, @State, @PinCode, @MobileNo, @Email, @LedgerFax,
                         @GSTNo, @TaxType, @IncomeTaxNo, @VATTINNo, @CreditLimit, @CreditPeriod, @OpeningBalance, @ClosingBalance,
                         @GUID, @AlterId, @CompanyId, @LastSyncedAt)",
-                    new { LedgerName = name, l.Parent, l.Address, l.State, l.MobileNo, l.Email, l.LedgerFax,
+                    new { LedgerName = name, l.Parent, l.Address, l.State, l.PinCode, l.MobileNo, l.Email, l.LedgerFax,
                           l.GSTNo, l.TaxType, l.IncomeTaxNo, l.VATTINNo, l.CreditLimit, l.CreditPeriod, l.OpeningBalance, l.ClosingBalance,
                           l.GUID, l.AlterId, CompanyId = companyId, l.LastSyncedAt }, tx);
                 added++;

@@ -60,7 +60,7 @@ public class TallyService
                         <FETCH>Name,Parent,_Address1,_Address2,PriorStateName,LedgerContact,LedgerPhone,Email,
                                SalesTaxNumber,IncomeTaxNumber,VATTINNUMBER,TaxType,LedgerFax,
                                OpeningBalance,ClosingBalance,CreditLimit,BillCreditPeriod,
-                               LEDGSTREGDETAILS.List:GSTIN,GUID,AlterId</FETCH>
+                               LEDGSTREGDETAILS.List:GSTIN,LEDMAILINGDETAILS.List:Pincode,GUID,AlterId</FETCH>
                     </COLLECTION>
                 </TDLMESSAGE>
             </TDL>
@@ -82,6 +82,10 @@ public class TallyService
                                      el.Element("_ADDRESS2")?.Value }
                                      .Where(v => !string.IsNullOrWhiteSpace(v))!),
                 State          = el.Element("PRIORSTATENAME")?.Value?.Trim(),
+                // Same story as GSTIN — Pincode lives under the nested
+                // LEDMAILINGDETAILS.LIST, not as a flat field on the ledger
+                // itself; confirmed against a real ledger export.
+                PinCode        = el.Descendants("PINCODE").LastOrDefault()?.Value?.Trim(),
                 MobileNo       = el.Element("LEDGERPHONE")?.Value?.Trim()
                               ?? el.Element("LEDGERCONTACT")?.Value?.Trim(),
                 Email          = el.Element("EMAIL")?.Value?.Trim(),
@@ -704,6 +708,7 @@ public class TallyService
 
         var partyGstin  = order.Ledger?.GSTNo?.Trim() ?? "";
         var partyState  = order.Ledger?.State?.Trim() ?? "";
+        var partyPincode = order.Ledger?.PinCode?.Trim() ?? "";
         var partyCreditPeriod = order.Ledger?.CreditPeriod?.Trim() ?? "";
         var partyAddressLines = (order.Ledger?.Address ?? "")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -740,10 +745,12 @@ public class TallyService
             {(string.IsNullOrEmpty(partyGstin) ? "" : $"<PARTYGSTIN>{Escape(partyGstin)}</PARTYGSTIN>")}
             {(string.IsNullOrEmpty(partyState) ? "" : $@"<STATENAME>{Escape(partyState)}</STATENAME>
             <PLACEOFSUPPLY>{Escape(partyState)}</PLACEOFSUPPLY>")}
+            {(string.IsNullOrEmpty(partyPincode) ? "" : $"<PARTYPINCODE>{Escape(partyPincode)}</PARTYPINCODE>")}
             <GSTREGISTRATIONTYPE>{gstRegistrationType}</GSTREGISTRATIONTYPE>
             <CONSIGNEECOUNTRYNAME>India</CONSIGNEECOUNTRYNAME>
             {(string.IsNullOrEmpty(partyGstin) ? "" : $"<CONSIGNEEGSTIN>{Escape(partyGstin)}</CONSIGNEEGSTIN>")}
             {(string.IsNullOrEmpty(partyState) ? "" : $"<CONSIGNEESTATENAME>{Escape(partyState)}</CONSIGNEESTATENAME>")}
+            {(string.IsNullOrEmpty(partyPincode) ? "" : $"<CONSIGNEEPINCODE>{Escape(partyPincode)}</CONSIGNEEPINCODE>")}
             {(string.IsNullOrEmpty(partyCreditPeriod) ? "" : $"<TERMSOFPAYMENT>{Escape(partyCreditPeriod)}</TERMSOFPAYMENT>")}
             <VOUCHERTYPENAME>{Escape(voucherType)}</VOUCHERTYPENAME>
             <PARTYNAME>{Escape(order.LedgerName)}</PARTYNAME>

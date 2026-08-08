@@ -9,6 +9,7 @@ public class Ledger
     // Contact
     public string? Address { get; set; }
     public string? State { get; set; }
+    public string? PinCode { get; set; }
     public string? MobileNo { get; set; }
     public string? Email { get; set; }
     public string? LedgerFax { get; set; }
