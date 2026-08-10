@@ -1,7 +1,6 @@
 @model SaleOrd.Models.ViewModels.SignUpVM
 @{
     Layout = null;
-    var companies = ViewBag.Companies as IEnumerable<SaleOrd.Models.Domain.Company> ?? Enumerable.Empty<SaleOrd.Models.Domain.Company>();
 }
 <!DOCTYPE html>
 <html lang="en">
@@ -48,15 +47,9 @@
             </div>
 
             <div class="mb-3">
-                <label asp-for="RequestedCompanyId" class="form-label">Company / Territory</label>
-                <select asp-for="RequestedCompanyId" class="form-select">
-                    <option value="">— Select —</option>
-                    @foreach (var c in companies)
-                    {
-                        <option value="@c.CompanyId">@c.CompanyName</option>
-                    }
-                </select>
-                <span asp-validation-for="RequestedCompanyId" class="text-danger small"></span>
+                <label asp-for="OrganizationName" class="form-label">Company / Organization Name</label>
+                <input asp-for="OrganizationName" class="form-control" placeholder="Which company/organization do you belong to?" />
+                <span asp-validation-for="OrganizationName" class="text-danger small"></span>
             </div>
 
             <button type="submit" class="btn btn-primary w-100 py-2 fw-semibold">

@@ -54,8 +54,13 @@
                     <input type="text" id="npGst" class="form-control form-control-sm" placeholder="e.g. 27AKJPC3922G1ZE" />
                 </div>
                 <div class="mb-2">
-                    <label class="form-label small fw-semibold">Food License No. (FSSAI)</label>
-                    <input type="text" id="npFssai" class="form-control form-control-sm" placeholder="Optional" />
+                    <label class="form-label small fw-semibold">Food License No. (FSSAI) <span class="text-danger">*</span></label>
+                    <input type="text" id="npFssai" class="form-control form-control-sm" placeholder="Required" required />
+                </div>
+                <div class="mb-2">
+                    <label class="form-label small fw-semibold">Food License Document (PDF)</label>
+                    <input type="file" id="npFssaiDoc" class="form-control form-control-sm" accept="application/pdf" />
+                    <div class="text-muted" style="font-size:11px">Optional — PDF only, max 5 MB</div>
                 </div>
                 <div class="mb-2">
                     <label class="form-label small fw-semibold">Address</label>
@@ -87,10 +92,10 @@
                     </div>
                 </div>
                 <div class="mb-2">
-                    <label class="form-label small fw-semibold">Contact Number</label>
-                    <input type="text" id="npContact" class="form-control form-control-sm" placeholder="Optional" />
+                    <label class="form-label small fw-semibold">Contact Number <span class="text-danger">*</span></label>
+                    <input type="text" id="npContact" class="form-control form-control-sm" placeholder="Required" required />
                 </div>
-                <div class="text-muted" style="font-size:11px">Saved locally and pushed to Tally immediately as a new party under "Sundry Debtors".</div>
+                <div class="text-muted" style="font-size:11px">Submitted for Admin approval — the party won't be usable in Sale Orders or pushed to Tally until approved.</div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
@@ -147,10 +152,15 @@ function renderParties(parties, q) {
         if (p.mobileNo) meta += '<span class="ms-2"><i class="bi bi-telephone"></i> ' + escHtml(p.mobileNo) + '</span>';
         if (p.gstNo)    meta += '<span class="ms-2 text-success"><i class="bi bi-shield-check"></i> ' + escHtml(p.gstNo) + '</span>';
 
+        // ApprovalStatus: 0 = Pending, 1 = Approved, 2 = Rejected
+        var statusHtml = '';
+        if (p.approvalStatus === 0) statusHtml = '<span class="badge bg-warning text-dark ms-2">Pending Approval</span>';
+        else if (p.approvalStatus === 2) statusHtml = '<span class="badge bg-secondary ms-2">Rejected</span>';
+
         html += '<div class="list-group-item py-2 px-3 border-0 border-bottom">' +
             '<div class="d-flex justify-content-between align-items-start">' +
             '<div style="min-width:0">' +
-            '<div class="fw-semibold text-truncate">' + escHtml(p.ledgerName) + '</div>' +
+            '<div class="fw-semibold text-truncate">' + escHtml(p.ledgerName) + statusHtml + '</div>' +
             '<div class="text-muted" style="font-size:11px">' + meta + '</div>' +
             '</div>' +
             '<div class="text-end ms-2 flex-shrink-0">' + balHtml + '</div>' +
@@ -190,24 +200,58 @@ function saveNewParty() {
         return;
     }
 
+    var fssaiNo = $('#npFssai').val().trim();
+    if (!fssaiNo) {
+        showToast('danger', 'Food License No. (FSSAI) is required.', 'Validation Error');
+        return;
+    }
+
+    var contactNo = $('#npContact').val().trim();
+    if (!contactNo) {
+        showToast('danger', 'Contact number is required.', 'Validation Error');
+        return;
+    }
+
+    var fileInput = document.getElementById('npFssaiDoc');
+    var file = fileInput.files.length ? fileInput.files[0] : null;
+    if (file) {
+        if (file.type !== 'application/pdf') {
+            showToast('danger', 'Food License document must be a PDF file.', 'Validation Error');
+            return;
+        }
+        if (file.size > 5 * 1024 * 1024) {
+            showToast('danger', 'Food License document must be under 5 MB.', 'Validation Error');
+            return;
+        }
+    }
+
     var $btn = $('#btnSaveParty');
     var originalHtml = $btn.html();
     $btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm me-1"></span>Saving...');
 
-    $.post('/Masters/CreateParty', {
-        partyName: name,
-        gstNo: $('#npGst').val().trim(),
-        fssaiNo: $('#npFssai').val().trim(),
-        address: $('#npAddress').val().trim(),
-        state: $('#npState').val(),
-        contactNo: $('#npContact').val().trim(),
-        __RequestVerificationToken: $('#newPartyModal [name=__RequestVerificationToken]').val()
-    }, function(r) {
-        showToast(r.success ? (r.tallySynced ? 'success' : 'warning') : 'danger', r.message, r.success ? 'Party Saved' : 'Error');
+    var fd = new FormData();
+    fd.append('partyName', name);
+    fd.append('gstNo', $('#npGst').val().trim());
+    fd.append('fssaiNo', fssaiNo);
+    fd.append('address', $('#npAddress').val().trim());
+    fd.append('state', $('#npState').val());
+    fd.append('contactNo', contactNo);
+    fd.append('__RequestVerificationToken', $('#newPartyModal [name=__RequestVerificationToken]').val());
+    if (file) fd.append('fssaiDocument', file);
+
+    $.ajax({
+        url: '/Masters/CreateParty',
+        type: 'POST',
+        data: fd,
+        contentType: false,
+        processData: false
+    }).done(function(r) {
+        showToast(r.success ? 'success' : 'danger', r.message, r.success ? 'Submitted' : 'Error');
         if (r.success) {
             bootstrap.Modal.getInstance(document.getElementById('newPartyModal')).hide();
             $('#npName, #npGst, #npFssai, #npAddress, #npContact').val('');
             $('#npState').val('');
+            fileInput.value = '';
             if ($('#searchInput').val().trim()) doSearch($('#searchInput').val().trim());
         }
     }).fail(function() {

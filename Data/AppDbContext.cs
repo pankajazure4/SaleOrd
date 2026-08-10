@@ -99,6 +99,12 @@ public class AppDbContext : IdentityDbContext<AppUser>
             .HasForeignKey(l => l.CompanyId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        builder.Entity<Ledger>()
+            .HasOne(l => l.ReviewedBy)
+            .WithMany()
+            .HasForeignKey(l => l.ReviewedById)
+            .OnDelete(DeleteBehavior.Restrict);
+
         builder.Entity<StockItem>()
             .HasOne(s => s.Company)
             .WithMany(c => c.StockItems)

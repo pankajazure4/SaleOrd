@@ -22,3 +22,8 @@ TestResults/
 *.pdb
 
 appsettings.Development.json
+
+# Runtime user uploads — FSSAI docs (outside wwwroot, gated) and the app logo
+# (inside wwwroot, publicly served). Neither belongs in source control.
+App_Data/Uploads/
+wwwroot/uploads/

@@ -645,8 +645,14 @@ public class SaleOrderController : Controller
         var (activeCompanyId, user) = await _resolver.ResolveAsync();
         if (user == null) return Unauthorized();
 
+        // Parties created via the web UI (Masters > Parties) sit at
+        // ApprovalStatus.Pending until an Admin approves them — they must
+        // not be pickable here until then. Ledgers pulled in from Tally
+        // master sync are always Approved already, so this filter is
+        // invisible for the normal (Tally-synced) case.
         var parties = await _db.Ledgers
             .Where(l => l.CompanyId == activeCompanyId &&
+                l.ApprovalStatus == LedgerApprovalStatus.Approved &&
                 (string.IsNullOrEmpty(q) || l.LedgerName.Contains(q)))
             .OrderBy(l => l.LedgerName)
             .Take(50)

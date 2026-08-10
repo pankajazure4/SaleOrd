@@ -11,7 +11,18 @@ public class SignupRequest
     public string FullName { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
     public string? PhoneNumber { get; set; }
-    public int RequestedCompanyId { get; set; }
+
+    // Free text the signer types themselves — "which company/organization do
+    // you belong to" — not a pick from our own internal Companies (Tally
+    // territories) list. That assignment is now an Admin-only decision made
+    // at approval time (AdminController.ApproveSignup's companyId param),
+    // same as Role already was.
+    public string OrganizationName { get; set; } = string.Empty;
+
+    // Nullable now — no longer collected on the public Sign Up form. Kept
+    // only so older rows (from before this field existed) still show what
+    // was picked back then; new requests always leave this null.
+    public int? RequestedCompanyId { get; set; }
     public SignupRequestStatus Status { get; set; } = SignupRequestStatus.Pending;
     public DateTime RequestedAt { get; set; } = DateTime.Now;
     public DateTime? ReviewedAt { get; set; }

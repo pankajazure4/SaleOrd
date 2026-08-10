@@ -2,6 +2,15 @@
 @{ ViewData["Title"] = "Add User"; ViewData["ActivePage"] = "Users"; }
 @{
     var companies = ViewBag.Companies as IEnumerable<SaleOrd.Models.Domain.Company> ?? Enumerable.Empty<SaleOrd.Models.Domain.Company>();
+    var roles = ViewBag.Roles as List<string> ?? new List<string> { "Admin", "Manager", "Salesman" };
+    // Built-in roles get their familiar icon/description; anything an Admin
+    // created via Manage Roles falls back to a generic look.
+    var roleMeta = new Dictionary<string, (string Desc, string Icon, string Color)>
+    {
+        ["Admin"]    = ("Full access", "bi-shield-fill-check", "text-danger"),
+        ["Manager"]  = ("View all orders", "bi-person-badge", "text-primary"),
+        ["Salesman"] = ("Create & view own", "bi-person", "text-success"),
+    };
 }
 
 <div class="page-header">
@@ -40,14 +49,15 @@
                 <div>
                     <label asp-for="Role" class="form-label">Role</label>
                     <div class="d-flex gap-2 flex-wrap">
-                        @foreach (var role in new[] { ("Admin","Full access","bi-shield-fill-check","text-danger"), ("Manager","View all orders","bi-person-badge","text-primary"), ("Salesman","Create & view own","bi-person","text-success") })
+                        @foreach (var role in roles)
                         {
+                            var meta = roleMeta.TryGetValue(role, out var m) ? m : ("Custom role", "bi-person-gear", "text-secondary");
                             <label class="role-option flex-grow-1" style="cursor:pointer">
-                                <input type="radio" asp-for="Role" value="@role.Item1" class="d-none role-radio" />
+                                <input type="radio" asp-for="Role" value="@role" class="d-none role-radio" />
                                 <div class="card p-2 text-center role-card" style="border-radius:10px;border:2px solid var(--border);transition:all .15s">
-                                    <i class="bi @role.Item3 @role.Item4 mb-1" style="font-size:20px"></i>
-                                    <div class="fw-semibold" style="font-size:12px">@role.Item1</div>
-                                    <div class="text-muted" style="font-size:10px">@role.Item2</div>
+                                    <i class="bi @meta.Item2 @meta.Item3 mb-1" style="font-size:20px"></i>
+                                    <div class="fw-semibold" style="font-size:12px">@role</div>
+                                    <div class="text-muted" style="font-size:10px">@meta.Item1</div>
                                 </div>
                             </label>
                         }

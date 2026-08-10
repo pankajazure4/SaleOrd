@@ -55,6 +55,40 @@
 
         <div class="card mb-3">
             <div class="card-header">
+                <i class="bi bi-image me-2 text-primary"></i>Application Logo
+            </div>
+            <div class="p-3">
+                <div class="d-flex align-items-center gap-3 mb-3">
+                    <div class="d-flex align-items-center justify-content-center border rounded"
+                         style="width:72px;height:72px;overflow:hidden;background:#fff">
+                        @if (!string.IsNullOrEmpty((string)ViewBag.LogoUrl))
+                        {
+                            <img src="@ViewBag.LogoUrl" alt="Logo" style="max-width:100%;max-height:100%;object-fit:contain" />
+                        }
+                        else
+                        {
+                            <i class="bi bi-bag-check-fill text-muted" style="font-size:28px"></i>
+                        }
+                    </div>
+                    <div class="text-muted small">Shown on the login screen and the app's top bar. PNG, JPG or SVG, max 2 MB.</div>
+                </div>
+                <form asp-action="UploadLogo" method="post" enctype="multipart/form-data" class="d-flex gap-2 flex-wrap align-items-center">
+                    @Html.AntiForgeryToken()
+                    <input type="file" name="logo" accept=".png,.jpg,.jpeg,.svg" class="form-control form-control-sm" style="max-width:260px" required />
+                    <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-upload me-1"></i>Upload</button>
+                </form>
+                @if (!string.IsNullOrEmpty((string)ViewBag.LogoUrl))
+                {
+                    <form asp-action="RemoveLogo" method="post" class="mt-2">
+                        @Html.AntiForgeryToken()
+                        <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash me-1"></i>Remove Logo</button>
+                    </form>
+                }
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header">
                 <i class="bi bi-plug me-2 text-primary"></i>Tally Connection
             </div>
             <div class="p-3">

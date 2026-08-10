@@ -1,0 +1,110 @@
+@model IEnumerable<SaleOrd.Models.ViewModels.RoleListItemVM>
+@{
+    ViewData["Title"] = "Manage Roles";
+    ViewData["ActivePage"] = "ManageRoles";
+}
+
+<div class="page-header">
+    <div>
+        <h5>Manage Roles</h5>
+        <div class="page-title-sub">Create additional roles beyond Admin, Manager and Salesman — set what each can access from Role Rights</div>
+    </div>
+</div>
+
+@if (TempData["Success"] != null)
+{
+    <div class="alert alert-success py-2 small">@TempData["Success"]</div>
+}
+@if (TempData["Error"] != null)
+{
+    <div class="alert alert-danger py-2 small">@TempData["Error"]</div>
+}
+
+<div class="row g-3">
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Role</th>
+                            <th class="text-center">Users</th>
+                            <th class="text-end">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in Model)
+                        {
+                            <tr>
+                                <td>
+                                    <span class="fw-semibold" style="font-size:13px">@r.Name</span>
+                                    @if (r.IsProtected)
+                                    {
+                                        <span class="badge bg-secondary ms-1" style="font-size:10px">Built-in</span>
+                                    }
+                                </td>
+                                <td class="text-center text-muted small">@r.UserCount</td>
+                                <td class="text-end">
+                                    <a href="/Admin/RoleRights" class="btn btn-sm btn-outline-primary" title="Set permissions">
+                                        <i class="bi bi-shield-lock"></i>
+                                    </a>
+                                    @if (!r.IsProtected)
+                                    {
+                                        <button type="button" class="btn btn-sm btn-outline-danger ms-1" data-bs-toggle="modal" data-bs-target="#deleteRoleModal@(r.Name)" title="Delete role">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+
+                                        <div class="modal fade" id="deleteRoleModal@(r.Name)" tabindex="-1">
+                                            <div class="modal-dialog modal-dialog-centered">
+                                                <div class="modal-content">
+                                                    <form method="post" asp-action="DeleteRole">
+                                                        @Html.AntiForgeryToken()
+                                                        <input type="hidden" name="roleName" value="@r.Name" />
+                                                        <div class="modal-header">
+                                                            <h6 class="modal-title">Delete "@r.Name"?</h6>
+                                                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                                        </div>
+                                                        <div class="modal-body">
+                                                            <div class="text-muted small">
+                                                                @if (r.UserCount > 0)
+                                                                {
+                                                                    <span class="text-danger">@r.UserCount user(s) still use this role — reassign them first from Edit User.</span>
+                                                                }
+                                                                else
+                                                                {
+                                                                    <span>This also removes its saved permission rights. This can't be undone.</span>
+                                                                }
+                                                            </div>
+                                                        </div>
+                                                        <div class="modal-footer">
+                                                            <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                                                            <button type="submit" class="btn btn-danger btn-sm" @(r.UserCount > 0 ? "disabled" : "")>Delete</button>
+                                                        </div>
+                                                    </form>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card p-3">
+            <div class="fw-semibold mb-2">New Role</div>
+            <form method="post" asp-action="CreateRole" class="d-flex gap-2">
+                @Html.AntiForgeryToken()
+                <input type="text" name="roleName" class="form-control form-control-sm" placeholder="e.g. Dispatcher" maxlength="50" required />
+                <button type="submit" class="btn btn-primary btn-sm text-nowrap"><i class="bi bi-plus-lg me-1"></i>Create</button>
+            </form>
+            <div class="text-muted mt-2" style="font-size:11px">
+                New roles start with no access. Go to <a href="/Admin/RoleRights">Role Rights</a> afterwards to grant the forms and reports it should see.
+            </div>
+        </div>
+    </div>
+</div>

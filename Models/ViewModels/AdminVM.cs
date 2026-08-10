@@ -95,8 +95,8 @@ public class SignUpVM
     [RegularExpression(@"^\d{10}$", ErrorMessage = "Enter a valid 10-digit mobile number")]
     public string PhoneNumber { get; set; } = string.Empty;
 
-    [Required(ErrorMessage = "Select your company / territory")]
-    public int RequestedCompanyId { get; set; }
+    [Required(ErrorMessage = "Enter your company / organization name"), MaxLength(200)]
+    public string OrganizationName { get; set; } = string.Empty;
 }
 
 public class SignupRequestListVM
@@ -105,9 +105,41 @@ public class SignupRequestListVM
     public string FullName { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
     public string? PhoneNumber { get; set; }
-    public string RequestedCompanyName { get; set; } = string.Empty;
+    public string OrganizationName { get; set; } = string.Empty;
+
+    // Legacy-only — null for every request submitted after the Company
+    // dropdown was removed from Sign Up; only pre-existing rows still carry
+    // these (see SignupRequest.RequestedCompanyId). RequestedCompanyId is
+    // kept around just to pre-select a sensible default in the Approve
+    // modal's company picker for those older rows.
+    public string? RequestedCompanyName { get; set; }
+    public int? RequestedCompanyId { get; set; }
     public SignupRequestStatus Status { get; set; }
     public DateTime RequestedAt { get; set; }
+    public DateTime? ReviewedAt { get; set; }
+    public string? ReviewedByName { get; set; }
+    public string? RejectionReason { get; set; }
+}
+
+public class RoleListItemVM
+{
+    public string Name { get; set; } = string.Empty;
+    public bool IsProtected { get; set; }
+    public int UserCount { get; set; }
+}
+
+public class PartyApprovalListVM
+{
+    public int LedgerId { get; set; }
+    public string LedgerName { get; set; } = string.Empty;
+    public string? GSTNo { get; set; }
+    public string? FSSAINo { get; set; }
+    public bool HasFssaiDocument { get; set; }
+    public string? Address { get; set; }
+    public string? State { get; set; }
+    public string? MobileNo { get; set; }
+    public LedgerApprovalStatus ApprovalStatus { get; set; }
+    public DateTime LastSyncedAt { get; set; }
     public DateTime? ReviewedAt { get; set; }
     public string? ReviewedByName { get; set; }
     public string? RejectionReason { get; set; }

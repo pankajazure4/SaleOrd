@@ -41,15 +41,17 @@ public class AccountController : Controller
     }
 
     [HttpGet]
-    public IActionResult Login(string? returnUrl = null)
+    public async Task<IActionResult> Login(string? returnUrl = null)
     {
         if (_signIn.IsSignedIn(User)) return RedirectToAction("Index", "Dashboard");
+        ViewBag.LogoUrl = await _db.AppSettings.Where(s => s.Key == "LogoUrl").Select(s => s.Value).FirstOrDefaultAsync();
         return View(new LoginVM { ReturnUrl = returnUrl });
     }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Login(LoginVM model)
     {
+        ViewBag.LogoUrl = await _db.AppSettings.Where(s => s.Key == "LogoUrl").Select(s => s.Value).FirstOrDefaultAsync();
         if (!ModelState.IsValid) return View(model);
 
         var result = await _signIn.PasswordSignInAsync(model.Email, model.Password,
@@ -83,10 +85,9 @@ public class AccountController : Controller
     // create every login by hand, so users request their own account here
     // and an Admin approves/rejects from Admin > Signup Requests.
     [HttpGet]
-    public async Task<IActionResult> SignUp()
+    public IActionResult SignUp()
     {
         if (_signIn.IsSignedIn(User)) return RedirectToAction("Index", "Dashboard");
-        ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
         return View(new SignUpVM());
     }
 
@@ -104,17 +105,19 @@ public class AccountController : Controller
             ModelState.AddModelError("PhoneNumber", "A signup request with this mobile number is already pending approval.");
 
         if (!ModelState.IsValid)
-        {
-            ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
             return View(model);
-        }
 
+        // Which internal Company/territory this login gets access to is now
+        // an Admin-only decision made at approval time (see
+        // AdminController.ApproveSignup) — OrganizationName here is just the
+        // signer's own free-text answer to "who do you work for", shown to
+        // the Admin for context, not used to drive access.
         _db.SignupRequests.Add(new SignupRequest
         {
             FullName = model.FullName,
             Email = model.Email,
             PhoneNumber = model.PhoneNumber,
-            RequestedCompanyId = model.RequestedCompanyId
+            OrganizationName = model.OrganizationName
         });
         await _db.SaveChangesAsync();
 

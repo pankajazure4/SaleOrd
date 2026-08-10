@@ -14,9 +14,18 @@
 <div class="login-wrap">
     <div class="login-card card p-4">
         <div class="text-center mb-4">
-            <div class="login-logo">
-                <i class="bi bi-bag-check-fill"></i>
-            </div>
+            @if (!string.IsNullOrEmpty((string)ViewBag.LogoUrl))
+            {
+                <div class="login-logo login-logo-img">
+                    <img src="@ViewBag.LogoUrl" alt="Logo" />
+                </div>
+            }
+            else
+            {
+                <div class="login-logo">
+                    <i class="bi bi-bag-check-fill"></i>
+                </div>
+            }
             <h5 class="fw-bold mb-0">SaleOrder</h5>
             <small class="text-muted">Tally Connected Order Management</small>
         </div>

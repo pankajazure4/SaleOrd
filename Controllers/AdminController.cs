@@ -14,16 +14,35 @@ public class AdminController : Controller
 {
     private readonly AppDbContext _db;
     private readonly UserManager<AppUser> _userManager;
+    private readonly RoleManager<IdentityRole> _roleManager;
     private readonly TallyService _tally;
     private readonly SaleOrd.Services.PermissionService _permSvc;
 
-    public AdminController(AppDbContext db, UserManager<AppUser> userManager, TallyService tally, SaleOrd.Services.PermissionService permSvc)
+    public AdminController(AppDbContext db, UserManager<AppUser> userManager, RoleManager<IdentityRole> roleManager,
+        TallyService tally, SaleOrd.Services.PermissionService permSvc)
     {
         _db = db;
         _userManager = userManager;
+        _roleManager = roleManager;
         _tally = tally;
         _permSvc = permSvc;
     }
+
+    // Source of truth for "what roles exist" is ASP.NET Identity's own
+    // AspNetRoles table (via RoleManager) — no separate custom Roles table
+    // needed, it's already exactly that. Admin/Manager/Salesman always sort
+    // first (in that order) since they're the built-in roles everyone
+    // recognizes; any roles an Admin creates later sort alphabetically after.
+    private async Task<List<string>> GetAllRoleNamesAsync()
+    {
+        var builtIn = new[] { AppRoles.Admin, AppRoles.Manager, AppRoles.Salesman };
+        var all = await _roleManager.Roles.Select(r => r.Name!).ToListAsync();
+        var custom = all.Except(builtIn).OrderBy(r => r);
+        return builtIn.Where(all.Contains).Concat(custom).ToList();
+    }
+
+    private static bool IsProtectedRole(string role) =>
+        role is AppRoles.Admin or AppRoles.Manager or AppRoles.Salesman;
 
     // Companies
     public async Task<IActionResult> Companies()
@@ -121,6 +140,7 @@ public class AdminController : Controller
     public async Task<IActionResult> CreateUser()
     {
         ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
+        ViewBag.Roles = await GetAllRoleNamesAsync();
         return View(new UserCreateVM());
     }
 
@@ -130,9 +150,13 @@ public class AdminController : Controller
         if (model.CompanyIds == null || !model.CompanyIds.Any())
             ModelState.AddModelError("CompanyIds", "Select at least one company.");
 
+        if (!string.IsNullOrEmpty(model.Role) && !await _roleManager.RoleExistsAsync(model.Role))
+            ModelState.AddModelError("Role", "Select a valid role.");
+
         if (!ModelState.IsValid)
         {
             ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
+            ViewBag.Roles = await GetAllRoleNamesAsync();
             return View(model);
         }
 
@@ -162,6 +186,7 @@ public class AdminController : Controller
             ModelState.AddModelError("", e.Description);
 
         ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
+        ViewBag.Roles = await GetAllRoleNamesAsync();
         return View(model);
     }
 
@@ -174,6 +199,7 @@ public class AdminController : Controller
         if (user == null) return NotFound();
 
         ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
+        ViewBag.Roles = await GetAllRoleNamesAsync();
 
         var model = new UserEditVM
         {
@@ -193,9 +219,14 @@ public class AdminController : Controller
     {
         // Remove password validation for edit (it's optional)
         ModelState.Remove(nameof(model.NewPassword));
+
+        if (!string.IsNullOrEmpty(model.Role) && !await _roleManager.RoleExistsAsync(model.Role))
+            ModelState.AddModelError("Role", "Select a valid role.");
+
         if (!ModelState.IsValid)
         {
             ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
+            ViewBag.Roles = await GetAllRoleNamesAsync();
             return View(model);
         }
 
@@ -219,6 +250,7 @@ public class AdminController : Controller
                 foreach (var e in result.Errors)
                     ModelState.AddModelError("", e.Description);
                 ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
+                ViewBag.Roles = await GetAllRoleNamesAsync();
                 return View(model);
             }
         }
@@ -273,7 +305,9 @@ public class AdminController : Controller
                 FullName = r.FullName,
                 Email = r.Email,
                 PhoneNumber = r.PhoneNumber,
-                RequestedCompanyName = r.RequestedCompany!.CompanyName,
+                OrganizationName = r.OrganizationName,
+                RequestedCompanyName = r.RequestedCompany != null ? r.RequestedCompany.CompanyName : null,
+                RequestedCompanyId = r.RequestedCompanyId,
                 Status = r.Status,
                 RequestedAt = r.RequestedAt,
                 ReviewedAt = r.ReviewedAt,
@@ -282,17 +316,32 @@ public class AdminController : Controller
             })
             .ToListAsync();
 
+        ViewBag.Roles = await GetAllRoleNamesAsync();
+        ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
         return View(requests);
     }
 
+    // companyId is now an Admin-only decision made here at approval — the
+    // signer only ever typed a free-text OrganizationName on the public
+    // form, they never picked from our internal Companies list.
     [HttpPost, ValidateAntiForgeryToken]
-    public async Task<IActionResult> ApproveSignup(int id, string role)
+    public async Task<IActionResult> ApproveSignup(int id, string role, int companyId)
     {
         var request = await _db.SignupRequests.FindAsync(id);
         if (request == null) return NotFound();
         if (request.Status != SignupRequestStatus.Pending)
         {
             TempData["Error"] = "This request has already been reviewed.";
+            return RedirectToAction(nameof(SignupRequests));
+        }
+        if (string.IsNullOrEmpty(role) || !await _roleManager.RoleExistsAsync(role))
+        {
+            TempData["Error"] = "Select a valid role.";
+            return RedirectToAction(nameof(SignupRequests));
+        }
+        if (!await _db.Companies.AnyAsync(c => c.CompanyId == companyId && c.IsActive))
+        {
+            TempData["Error"] = "Select a valid company.";
             return RedirectToAction(nameof(SignupRequests));
         }
 
@@ -304,7 +353,7 @@ public class AdminController : Controller
             Email = request.Email,
             UserName = request.Email,
             PhoneNumber = request.PhoneNumber,
-            CompanyId = request.RequestedCompanyId,
+            CompanyId = companyId,
             Role = role
         };
 
@@ -316,7 +365,7 @@ public class AdminController : Controller
         }
 
         await _userManager.AddToRoleAsync(user, role);
-        _db.UserCompanies.Add(new UserCompany { UserId = user.Id, CompanyId = request.RequestedCompanyId });
+        _db.UserCompanies.Add(new UserCompany { UserId = user.Id, CompanyId = companyId });
 
         request.Status = SignupRequestStatus.Approved;
         request.ReviewedAt = DateTime.Now;
@@ -350,11 +399,110 @@ public class AdminController : Controller
         return RedirectToAction(nameof(SignupRequests));
     }
 
-    // Role Rights
+    // Party Master approval — a party created via Masters > Parties sits
+    // Pending until reviewed here; only on approval does it become pickable
+    // in Sale Orders (SaleOrderController.GetParties filters by
+    // ApprovalStatus) and only then does it get pushed to Tally — no point
+    // creating Tally master data for something that might get rejected.
+    public async Task<IActionResult> PendingParties()
+    {
+        var parties = await _db.Ledgers
+            .Include(l => l.ReviewedBy)
+            .OrderBy(l => l.ApprovalStatus == LedgerApprovalStatus.Pending ? 0 : 1) // Pending first
+            .ThenByDescending(l => l.LastSyncedAt)
+            .Select(l => new PartyApprovalListVM
+            {
+                LedgerId = l.LedgerId,
+                LedgerName = l.LedgerName,
+                GSTNo = l.GSTNo,
+                FSSAINo = l.FSSAINo,
+                HasFssaiDocument = l.FSSAIDocumentPath != null,
+                Address = l.Address,
+                State = l.State,
+                MobileNo = l.MobileNo,
+                ApprovalStatus = l.ApprovalStatus,
+                LastSyncedAt = l.LastSyncedAt,
+                ReviewedAt = l.ReviewedAt,
+                ReviewedByName = l.ReviewedBy != null ? l.ReviewedBy.FullName : null,
+                RejectionReason = l.RejectionReason
+            })
+            .ToListAsync();
+
+        return View(parties);
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> ApproveParty(int id)
+    {
+        var ledger = await _db.Ledgers.Include(l => l.Company).FirstOrDefaultAsync(l => l.LedgerId == id);
+        if (ledger == null) return NotFound();
+        if (ledger.ApprovalStatus != LedgerApprovalStatus.Pending)
+        {
+            TempData["Error"] = "This party has already been reviewed.";
+            return RedirectToAction(nameof(PendingParties));
+        }
+        if (ledger.Company == null)
+        {
+            TempData["Error"] = "This party's company could not be found.";
+            return RedirectToAction(nameof(PendingParties));
+        }
+
+        var admin = await _userManager.GetUserAsync(User);
+
+        var tallyUrl = await _db.AppSettings
+            .Where(s => s.Key == "TallyUrl")
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync()
+            ?? "http://localhost:9000";
+
+        var fssaiUdfField = await _db.AppSettings
+            .Where(s => s.Key == "TallyFssaiUdfField")
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync();
+
+        var (success, message) = await _tally.PushLedgerAsync(tallyUrl, ledger, ledger.Company.TallyCompanyName, fssaiUdfField);
+
+        ledger.ApprovalStatus = LedgerApprovalStatus.Approved;
+        ledger.ReviewedAt = DateTime.Now;
+        ledger.ReviewedById = admin?.Id;
+        ledger.RejectionReason = null;
+        await _db.SaveChangesAsync();
+
+        TempData["Success"] = success
+            ? $"Party \"{ledger.LedgerName}\" approved and synced to Tally."
+            : $"Party \"{ledger.LedgerName}\" approved and is now usable in Sale Orders, but the Tally sync failed: {message}. Retry the sync later.";
+        return RedirectToAction(nameof(PendingParties));
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> RejectParty(int id, string? reason)
+    {
+        var ledger = await _db.Ledgers.FindAsync(id);
+        if (ledger == null) return NotFound();
+        if (ledger.ApprovalStatus != LedgerApprovalStatus.Pending)
+        {
+            TempData["Error"] = "This party has already been reviewed.";
+            return RedirectToAction(nameof(PendingParties));
+        }
+
+        var admin = await _userManager.GetUserAsync(User);
+        ledger.ApprovalStatus = LedgerApprovalStatus.Rejected;
+        ledger.ReviewedAt = DateTime.Now;
+        ledger.ReviewedById = admin?.Id;
+        ledger.RejectionReason = reason;
+        await _db.SaveChangesAsync();
+
+        TempData["Success"] = $"Party \"{ledger.LedgerName}\" rejected.";
+        return RedirectToAction(nameof(PendingParties));
+    }
+
+    // Role Rights — Admin isn't listed here since it always has full access
+    // (PermissionService.HasAsync short-circuits for it); every other role,
+    // built-in or Admin-created, gets a column in the matrix.
     [HttpGet]
     public async Task<IActionResult> RoleRights()
     {
-        var roles = new[] { AppRoles.Manager, AppRoles.Salesman };
+        var roles = (await GetAllRoleNamesAsync()).Where(r => r != AppRoles.Admin).ToArray();
 
         var existing = await _db.RolePermissions
             .Where(p => roles.Contains(p.Role))
@@ -367,7 +515,12 @@ public class AdminController : Controller
             foreach (var (key, _, _) in AppPermissions.All)
             {
                 var perm = existing.FirstOrDefault(p => p.Role == role && p.PermissionKey == key);
-                matrix[role][key] = perm?.IsAllowed ?? true;
+                // Custom roles with no seeded row default to no access — an
+                // Admin creating a brand-new role has to explicitly grant
+                // rights here, rather than the role quietly getting
+                // everything. Manager/Salesman keep their historical
+                // "unseeded == allowed" fallback for compatibility.
+                matrix[role][key] = perm?.IsAllowed ?? IsProtectedRole(role);
             }
         }
 
@@ -377,7 +530,7 @@ public class AdminController : Controller
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> RoleRights(IFormCollection form)
     {
-        var roles = new[] { AppRoles.Manager, AppRoles.Salesman };
+        var roles = (await GetAllRoleNamesAsync()).Where(r => r != AppRoles.Admin).ToArray();
 
         var existing = await _db.RolePermissions
             .Where(p => roles.Contains(p.Role))
@@ -403,6 +556,86 @@ public class AdminController : Controller
 
         TempData["Success"] = "Role rights updated.";
         return RedirectToAction(nameof(RoleRights));
+    }
+
+    // Manage Roles — Admin can create additional roles beyond the 3
+    // built-ins; a new role starts with no permissions until granted from
+    // Role Rights above (see RoleRights()'s IsProtectedRole fallback).
+    public async Task<IActionResult> ManageRoles()
+    {
+        var roleNames = await GetAllRoleNamesAsync();
+        var userCounts = await _db.Users
+            .GroupBy(u => u.Role)
+            .Select(g => new { Role = g.Key, Count = g.Count() })
+            .ToListAsync();
+
+        var roles = roleNames.Select(r => new RoleListItemVM
+        {
+            Name = r,
+            IsProtected = IsProtectedRole(r),
+            UserCount = userCounts.FirstOrDefault(x => x.Role == r)?.Count ?? 0
+        }).ToList();
+
+        return View(roles);
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> CreateRole(string roleName)
+    {
+        roleName = (roleName ?? "").Trim();
+        if (string.IsNullOrEmpty(roleName))
+        {
+            TempData["Error"] = "Role name is required.";
+            return RedirectToAction(nameof(ManageRoles));
+        }
+        if (roleName.Length > 50)
+        {
+            TempData["Error"] = "Role name must be under 50 characters.";
+            return RedirectToAction(nameof(ManageRoles));
+        }
+        if (await _roleManager.RoleExistsAsync(roleName))
+        {
+            TempData["Error"] = $"A role named \"{roleName}\" already exists.";
+            return RedirectToAction(nameof(ManageRoles));
+        }
+
+        var result = await _roleManager.CreateAsync(new IdentityRole(roleName));
+        if (!result.Succeeded)
+        {
+            TempData["Error"] = string.Join(" ", result.Errors.Select(e => e.Description));
+            return RedirectToAction(nameof(ManageRoles));
+        }
+
+        TempData["Success"] = $"Role \"{roleName}\" created. Set what it can access from Role Rights.";
+        return RedirectToAction(nameof(ManageRoles));
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> DeleteRole(string roleName)
+    {
+        if (IsProtectedRole(roleName))
+        {
+            TempData["Error"] = "Built-in roles can't be deleted.";
+            return RedirectToAction(nameof(ManageRoles));
+        }
+
+        var inUse = await _db.Users.AnyAsync(u => u.Role == roleName);
+        if (inUse)
+        {
+            TempData["Error"] = $"\"{roleName}\" is still assigned to one or more users — reassign them first.";
+            return RedirectToAction(nameof(ManageRoles));
+        }
+
+        var role = await _roleManager.FindByNameAsync(roleName);
+        if (role != null) await _roleManager.DeleteAsync(role);
+
+        var stalePerms = await _db.RolePermissions.Where(p => p.Role == roleName).ToListAsync();
+        _db.RolePermissions.RemoveRange(stalePerms);
+        await _db.SaveChangesAsync();
+        _permSvc.InvalidateCache();
+
+        TempData["Success"] = $"Role \"{roleName}\" deleted.";
+        return RedirectToAction(nameof(ManageRoles));
     }
 
     // User Activity

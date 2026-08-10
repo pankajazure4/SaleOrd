@@ -15,13 +15,23 @@ public class SettingsController : Controller
     private readonly TallyService _tally;
     private readonly IConfiguration _config;
     private readonly LicenseService _license;
+    private readonly IWebHostEnvironment _env;
 
-    public SettingsController(AppDbContext db, TallyService tally, IConfiguration config, LicenseService license)
+    // The app logo is meant to be publicly visible (topbar, login screen), so
+    // unlike FSSAI docs it lives under wwwroot and is served as a normal
+    // static file rather than through a gated controller action.
+    private const long MaxLogoBytes = 2 * 1024 * 1024; // 2 MB
+    private static readonly string[] AllowedLogoExtensions = { ".png", ".jpg", ".jpeg", ".svg" };
+    private string LogoUploadsRoot => Path.Combine(_env.WebRootPath, "uploads", "branding");
+
+    public SettingsController(AppDbContext db, TallyService tally, IConfiguration config, LicenseService license,
+        IWebHostEnvironment env)
     {
         _db = db;
         _tally = tally;
         _config = config;
         _license = license;
+        _env = env;
     }
 
     public async Task<IActionResult> Index()
@@ -77,7 +87,76 @@ public class SettingsController : Controller
         ViewBag.LicenseMaskedKey = LicenseKeyProtector.Mask(licenseKey);
         ViewBag.LicenseHasKey    = !string.IsNullOrEmpty(licenseKey);
         ViewBag.LicenseStatus    = await _license.CheckAsync();
+
+        ViewBag.LogoUrl = allSettings.FirstOrDefault(s => s.Key == "LogoUrl")?.Value;
         return View();
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    [RequestSizeLimit(MaxLogoBytes + 1024 * 1024)]
+    public async Task<IActionResult> UploadLogo(IFormFile logo)
+    {
+        if (logo == null || logo.Length == 0)
+        {
+            TempData["Error"] = "Choose an image file first.";
+            return RedirectToAction(nameof(Index));
+        }
+        if (logo.Length > MaxLogoBytes)
+        {
+            TempData["Error"] = "Logo image must be under 2 MB.";
+            return RedirectToAction(nameof(Index));
+        }
+        var ext = Path.GetExtension(logo.FileName).ToLowerInvariant();
+        if (!AllowedLogoExtensions.Contains(ext))
+        {
+            TempData["Error"] = "Logo must be a PNG, JPG or SVG image.";
+            return RedirectToAction(nameof(Index));
+        }
+
+        Directory.CreateDirectory(LogoUploadsRoot);
+
+        // Clear out any previously uploaded logo (possibly a different
+        // extension) so old files don't pile up under wwwroot.
+        foreach (var oldExt in AllowedLogoExtensions)
+        {
+            var oldPath = Path.Combine(LogoUploadsRoot, $"logo{oldExt}");
+            if (System.IO.File.Exists(oldPath)) System.IO.File.Delete(oldPath);
+        }
+
+        var fileName = $"logo{ext}";
+        await using (var stream = System.IO.File.Create(Path.Combine(LogoUploadsRoot, fileName)))
+            await logo.CopyToAsync(stream);
+
+        // Cache-bust with a version token so browsers pick up the new image
+        // immediately instead of serving a stale cached one at the same URL.
+        var logoUrl = $"/uploads/branding/{fileName}?v={DateTime.UtcNow.Ticks}";
+
+        var setting = await _db.AppSettings.FindAsync("LogoUrl");
+        if (setting == null) _db.AppSettings.Add(new AppSetting { Key = "LogoUrl", Value = logoUrl });
+        else setting.Value = logoUrl;
+        await _db.SaveChangesAsync();
+
+        TempData["Success"] = "Logo updated.";
+        return RedirectToAction(nameof(Index));
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> RemoveLogo()
+    {
+        var setting = await _db.AppSettings.FindAsync("LogoUrl");
+        if (setting != null)
+        {
+            _db.AppSettings.Remove(setting);
+            await _db.SaveChangesAsync();
+        }
+        foreach (var ext in AllowedLogoExtensions)
+        {
+            var path = Path.Combine(LogoUploadsRoot, $"logo{ext}");
+            if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+        }
+
+        TempData["Success"] = "Logo removed.";
+        return RedirectToAction(nameof(Index));
     }
 
     [HttpPost, ValidateAntiForgeryToken]

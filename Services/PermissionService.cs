@@ -10,6 +10,14 @@ public class PermissionService
     private readonly AppDbContext _db;
     private readonly IMemoryCache _cache;
 
+    // Roles are no longer a fixed {Manager, Salesman} pair — Admin can create
+    // more of them at runtime (see AdminController.CreateRole) — so cache
+    // keys can't be invalidated by iterating a hardcoded role list anymore.
+    // A version stamp baked into every key sidesteps that: bumping it makes
+    // every previously-cached entry, for any role, unreachable at once; the
+    // old entries just age out on their own 10-minute TTL.
+    private static int _cacheVersion;
+
     public PermissionService(AppDbContext db, IMemoryCache cache)
     {
         _db = db;
@@ -21,7 +29,7 @@ public class PermissionService
         if (role == AppRoles.Admin)
             return AppPermissions.All.Select(p => p.Key).ToHashSet();
 
-        var cacheKey = $"perms_{role}";
+        var cacheKey = $"perms_v{_cacheVersion}_{role}";
         if (_cache.TryGetValue(cacheKey, out HashSet<string>? cached) && cached != null)
             return cached;
 
@@ -44,7 +52,6 @@ public class PermissionService
 
     public void InvalidateCache()
     {
-        foreach (var role in new[] { AppRoles.Manager, AppRoles.Salesman })
-            _cache.Remove($"perms_{role}");
+        Interlocked.Increment(ref _cacheVersion);
     }
 }

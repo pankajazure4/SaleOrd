@@ -20,6 +20,18 @@ public class Ledger
     public string? IncomeTaxNo { get; set; }
     public string? VATTINNo { get; set; }
     public string? FSSAINo { get; set; }          // Food License No. — local only, no Tally equivalent
+    public string? FSSAIDocumentPath { get; set; } // Relative path under the (non-web-exposed) uploads root; served via a controller action, never a direct static-file URL.
+
+    // Approval workflow (Party Master, created from the web UI) — a party a
+    // user creates here isn't usable in Sale Orders until an Admin approves
+    // it. Ledgers that arrive via Tally master sync are never gated (they're
+    // already real Tally masters), so this defaults to Approved and only
+    // MastersController.CreateParty explicitly sets it to Pending; the sync
+    // upsert paths never touch this column at all, on purpose.
+    public LedgerApprovalStatus ApprovalStatus { get; set; } = LedgerApprovalStatus.Approved;
+    public string? RejectionReason { get; set; }
+    public DateTime? ReviewedAt { get; set; }
+    public string? ReviewedById { get; set; }
 
     // Financial
     public decimal CreditLimit { get; set; }
@@ -35,4 +47,12 @@ public class Ledger
     public DateTime LastSyncedAt { get; set; }
 
     public Company? Company { get; set; }
+    public AppUser? ReviewedBy { get; set; }
+}
+
+public enum LedgerApprovalStatus
+{
+    Pending = 0,
+    Approved = 1,
+    Rejected = 2
 }

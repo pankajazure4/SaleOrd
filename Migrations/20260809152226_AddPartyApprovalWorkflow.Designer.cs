@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SaleOrd.Data;
 
@@ -11,9 +12,11 @@ using SaleOrd.Data;
 namespace SaleOrd.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260809152226_AddPartyApprovalWorkflow")]
+    partial class AddPartyApprovalWorkflow
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -719,10 +722,6 @@ namespace SaleOrd.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<string>("OrganizationName")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
                     b.Property<string>("PhoneNumber")
                         .HasColumnType("nvarchar(max)");
 
@@ -732,7 +731,7 @@ namespace SaleOrd.Migrations
                     b.Property<DateTime>("RequestedAt")
                         .HasColumnType("datetime2");
 
-                    b.Property<int?>("RequestedCompanyId")
+                    b.Property<int>("RequestedCompanyId")
                         .HasColumnType("int");
 
                     b.Property<DateTime?>("ReviewedAt")
@@ -1235,7 +1234,8 @@ namespace SaleOrd.Migrations
                     b.HasOne("SaleOrd.Models.Domain.Company", "RequestedCompany")
                         .WithMany()
                         .HasForeignKey("RequestedCompanyId")
-                        .OnDelete(DeleteBehavior.Restrict);
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
 
                     b.HasOne("SaleOrd.Models.Domain.AppUser", "ReviewedBy")
                         .WithMany()

@@ -28,7 +28,7 @@
                 <tr>
                     <th>Name</th>
                     <th class="d-none d-md-table-cell">Email / Phone</th>
-                    <th>Company</th>
+                    <th>Company / Organization</th>
                     <th>Status</th>
                     <th class="d-none d-md-table-cell">Requested</th>
                     <th class="text-end">Actions</th>
@@ -55,7 +55,9 @@
                                 <div>@r.PhoneNumber</div>
                             }
                         </td>
-                        <td><span class="company-chip">@r.RequestedCompanyName</span></td>
+                        <td>
+                            <span class="company-chip">@(!string.IsNullOrWhiteSpace(r.OrganizationName) ? r.OrganizationName : (r.RequestedCompanyName ?? "—"))</span>
+                        </td>
                         <td>
                             <span class="badge bg-@statusBadge">@r.Status</span>
                             @if (r.Status == SaleOrd.Models.Domain.SignupRequestStatus.Rejected && !string.IsNullOrWhiteSpace(r.RejectionReason))
@@ -92,14 +94,28 @@
                                                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                                                 </div>
                                                 <div class="modal-body">
+                                                    @if (!string.IsNullOrWhiteSpace(r.OrganizationName))
+                                                    {
+                                                        <div class="text-muted small mb-2">
+                                                            They said they belong to: <strong>@r.OrganizationName</strong>
+                                                        </div>
+                                                    }
                                                     <label class="form-label small fw-semibold">Role</label>
-                                                    <select name="role" class="form-select">
-                                                        <option value="Salesman" selected>Salesman — Create &amp; view own</option>
-                                                        <option value="Manager">Manager — View all orders</option>
-                                                        <option value="Admin">Admin — Full access</option>
+                                                    <select name="role" class="form-select mb-2">
+                                                        @foreach (var role in (ViewBag.Roles as List<string> ?? new List<string> { "Salesman", "Manager", "Admin" }))
+                                                        {
+                                                            <option value="@role" selected="@(role == "Salesman")">@role</option>
+                                                        }
+                                                    </select>
+                                                    <label class="form-label small fw-semibold">Company Access</label>
+                                                    <select name="companyId" class="form-select" required>
+                                                        @foreach (var c in (ViewBag.Companies as IEnumerable<SaleOrd.Models.Domain.Company> ?? Enumerable.Empty<SaleOrd.Models.Domain.Company>()))
+                                                        {
+                                                            <option value="@c.CompanyId" selected="@(c.CompanyId == r.RequestedCompanyId)">@c.CompanyName</option>
+                                                        }
                                                     </select>
                                                     <div class="text-muted small mt-2">
-                                                        Company access: <strong>@r.RequestedCompanyName</strong> (the requested one — add more later from Edit User if needed).
+                                                        Sets their default company access — more can be added later from Edit User.
                                                     </div>
                                                     <div class="text-muted small mt-2">
                                                         A default password will be set for this login. You'll see it after approving — share it with the user.

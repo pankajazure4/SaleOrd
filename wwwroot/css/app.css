@@ -192,6 +192,8 @@ a { color: var(--primary); }
 .login-wrap { min-height: 100vh; background: linear-gradient(135deg, #4361ee 0%, #7b5ea7 100%); display: flex; align-items: center; justify-content: center; padding: 20px; }
 .login-card { max-width: 400px; width: 100%; border-radius: 16px; border: none; box-shadow: 0 8px 40px rgba(0,0,0,.18); }
 .login-logo { width: 60px; height: 60px; background: var(--primary); border-radius: 16px; display: flex; align-items: center; justify-content: center; margin: 0 auto 12px; color: #fff; font-size: 26px; }
+.login-logo.login-logo-img { background: #fff; border: 1px solid var(--border); }
+.login-logo-img img { max-width: 80%; max-height: 80%; object-fit: contain; }
 
 /* ── Bottom Nav (mobile) ───────────────────────────── */
 .bottom-nav {
@@ -233,7 +235,8 @@ main.app-main {
 }
 .topbar-toggle { background: none; border: none; color: #fff; font-size: 22px; cursor: pointer; padding: 4px 6px; border-radius: 6px; line-height: 1; }
 .topbar-toggle:hover { background: rgba(255,255,255,.15); }
-.topbar-brand { color: #fff !important; font-weight: 700; font-size: 15px; text-decoration: none; flex: 1; }
+.topbar-brand { color: #fff !important; font-weight: 700; font-size: 15px; text-decoration: none; flex: 1; display: flex; align-items: center; }
+.brand-logo-img { height: 24px; width: auto; max-width: 100px; object-fit: contain; vertical-align: middle; }
 
 .sidebar {
   position: fixed; top: var(--nav-h); left: 0; bottom: 0; width: var(--sidebar-w);

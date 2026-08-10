@@ -34,6 +34,7 @@
     else if (User.IsInRole(SaleOrd.Models.Domain.AppRoles.Manager)) _userRole = SaleOrd.Models.Domain.AppRoles.Manager;
     else _userRole = SaleOrd.Models.Domain.AppRoles.Salesman;
     var _perms = await _permSvc.GetAllowedKeysAsync(_userRole);
+    var _logoUrl = await _db.AppSettings.Where(s => s.Key == "LogoUrl").Select(s => s.Value).FirstOrDefaultAsync();
 
     <!-- ── Top bar ── -->
     <header class="topbar">
@@ -41,7 +42,15 @@
             <i class="bi bi-list"></i>
         </button>
         <a href="/Dashboard" class="topbar-brand">
-            <i class="bi bi-bag-check-fill me-1"></i><span class="brand-text">SaleOrder</span>
+            @if (!string.IsNullOrEmpty(_logoUrl))
+            {
+                <img src="@_logoUrl" alt="Logo" class="brand-logo-img me-1" />
+            }
+            else
+            {
+                <i class="bi bi-bag-check-fill me-1"></i>
+            }
+            <span class="brand-text">SaleOrder</span>
         </a>
 
         <!-- Company switcher (ViewComponent) -->
@@ -169,6 +178,7 @@
         @if (User.IsInRole("Admin"))
         {
             var _pendingSignups = await _db.SignupRequests.CountAsync(r => r.Status == SaleOrd.Models.Domain.SignupRequestStatus.Pending);
+            var _pendingParties = await _db.Ledgers.CountAsync(l => l.ApprovalStatus == SaleOrd.Models.Domain.LedgerApprovalStatus.Pending);
             <div class="sidebar-section">
                 <div class="sidebar-label">Admin</div>
                 <a href="/Admin/Companies" class="sidebar-link @(activePage == "Companies" ? "active" : "")">
@@ -184,8 +194,18 @@
                         <span class="badge bg-danger ms-1">@_pendingSignups</span>
                     }
                 </a>
+                <a href="/Admin/PendingParties" class="sidebar-link @(activePage == "PendingParties" ? "active" : "")">
+                    <i class="bi bi-person-check"></i>Party Approvals
+                    @if (_pendingParties > 0)
+                    {
+                        <span class="badge bg-danger ms-1">@_pendingParties</span>
+                    }
+                </a>
                 <a href="/Admin/RoleRights" class="sidebar-link @(activePage == "RoleRights" ? "active" : "")">
                     <i class="bi bi-shield-lock"></i>Role Rights
+                </a>
+                <a href="/Admin/ManageRoles" class="sidebar-link @(activePage == "ManageRoles" ? "active" : "")">
+                    <i class="bi bi-person-gear"></i>Manage Roles
                 </a>
                 <a href="/Admin/UserActivity" class="sidebar-link @(activePage == "UserActivity" ? "active" : "")">
                     <i class="bi bi-activity"></i>User Activity
