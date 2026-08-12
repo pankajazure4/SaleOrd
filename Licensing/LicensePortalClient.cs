@@ -38,14 +38,22 @@ public static class LicensePortalClient
         };
         var json = JsonSerializer.Serialize(payload);
 
+        // This runs on every request via LicenseGateMiddleware whenever the
+        // 45s in-process cache has expired — 15s+30s worst case (the old
+        // values) meant an unlucky request could stall the whole app for up
+        // to 45s. Trimmed to a still-generous-for-a-real-network but far
+        // less punishing 6s+10s; CheckUncachedAsync already falls back to
+        // the offline grace-period snapshot the moment both attempts fail,
+        // so a slow/unreachable portal degrades gracefully either way —
+        // this only changes how long that fallback takes to kick in.
         string responseBody;
         try
         {
-            responseBody = await PostAsync(url, json, useProxy: true, seconds: 15);
+            responseBody = await PostAsync(url, json, useProxy: true, seconds: 6);
         }
         catch
         {
-            responseBody = await PostAsync(url, json, useProxy: false, seconds: 30);
+            responseBody = await PostAsync(url, json, useProxy: false, seconds: 10);
         }
 
         var parsed = JsonSerializer.Deserialize<PortalValidateResponse>(

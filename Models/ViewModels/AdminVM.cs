@@ -79,10 +79,15 @@ public class UserEditVM
     public string? NewPassword { get; set; }
 }
 
-// Public self-signup form — no password/role/company-access fields here on
-// purpose. Role and final company access are Admin-only decisions made at
-// approval time (AdminController.ApproveSignup), not something a signee
-// picks for themselves.
+// Public self-signup form — no role/company-access fields here on purpose.
+// Role and final company access are Admin-only decisions made at approval
+// time (AdminController.ApproveSignup), not something a signee picks for
+// themselves. Password IS collected here though — the signer sets their own
+// at signup rather than getting handed a default one after approval (see
+// SignupRequest.PasswordHash); [Required]/[MinLength] here are just the
+// client-visible half, the real rule enforced server-side is Identity's own
+// configured policy (Program.cs) via AccountController.SignUp's
+// PasswordValidators check, so the two must be kept in sync by hand.
 public class SignUpVM
 {
     [Required, MaxLength(100)]
@@ -97,6 +102,16 @@ public class SignUpVM
 
     [Required(ErrorMessage = "Enter your company / organization name"), MaxLength(200)]
     public string OrganizationName { get; set; } = string.Empty;
+
+    [Required(ErrorMessage = "Password is required")]
+    [MinLength(8, ErrorMessage = "Password must be at least 8 characters")]
+    [DataType(DataType.Password)]
+    public string Password { get; set; } = string.Empty;
+
+    [Required(ErrorMessage = "Confirm your password")]
+    [Compare(nameof(Password), ErrorMessage = "Passwords do not match")]
+    [DataType(DataType.Password)]
+    public string ConfirmPassword { get; set; } = string.Empty;
 }
 
 public class SignupRequestListVM
@@ -106,6 +121,11 @@ public class SignupRequestListVM
     public string Email { get; set; } = string.Empty;
     public string? PhoneNumber { get; set; }
     public string OrganizationName { get; set; } = string.Empty;
+
+    // False only for requests submitted before Sign Up collected a password
+    // (see SignupRequest.PasswordHash) — AdminController.ApproveSignup
+    // refuses to approve those, so surface it here to warn before they try.
+    public bool HasPassword { get; set; }
 
     // Legacy-only — null for every request submitted after the Company
     // dropdown was removed from Sign Up; only pre-existing rows still carry

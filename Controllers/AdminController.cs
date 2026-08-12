@@ -290,8 +290,6 @@ public class AdminController : Controller
 
     // Signup Requests — see SignupRequest for the why. Approving here is the
     // only place a self-signup actually turns into a real AppUser login.
-    private const string DefaultSignupPassword = "Welcome@123";
-
     public async Task<IActionResult> SignupRequests()
     {
         var requests = await _db.SignupRequests
@@ -306,6 +304,7 @@ public class AdminController : Controller
                 Email = r.Email,
                 PhoneNumber = r.PhoneNumber,
                 OrganizationName = r.OrganizationName,
+                HasPassword = r.PasswordHash != "",
                 RequestedCompanyName = r.RequestedCompany != null ? r.RequestedCompany.CompanyName : null,
                 RequestedCompanyId = r.RequestedCompanyId,
                 Status = r.Status,
@@ -344,9 +343,23 @@ public class AdminController : Controller
             TempData["Error"] = "Select a valid company.";
             return RedirectToAction(nameof(SignupRequests));
         }
+        if (string.IsNullOrEmpty(request.PasswordHash))
+        {
+            // Requests submitted before self-chosen passwords existed on the
+            // Sign Up form have no hash to carry over — approving as-is would
+            // silently create a login nobody can ever sign into. Reject it
+            // and have them resubmit through the current form instead.
+            TempData["Error"] = "This request predates password-at-signup and has none saved — reject it and ask the user to sign up again.";
+            return RedirectToAction(nameof(SignupRequests));
+        }
 
         var admin = await _userManager.GetUserAsync(User);
 
+        // PasswordHash carries straight over from what the user set at Sign
+        // Up (AccountController.SignUp) — CreateAsync(user), the no-password
+        // overload, persists the object as given rather than hashing a new
+        // one, so this is the one and only password they'll know: no default
+        // for an Admin to generate or communicate.
         var user = new AppUser
         {
             FullName = request.FullName,
@@ -354,10 +367,11 @@ public class AdminController : Controller
             UserName = request.Email,
             PhoneNumber = request.PhoneNumber,
             CompanyId = companyId,
-            Role = role
+            Role = role,
+            PasswordHash = request.PasswordHash
         };
 
-        var result = await _userManager.CreateAsync(user, DefaultSignupPassword);
+        var result = await _userManager.CreateAsync(user);
         if (!result.Succeeded)
         {
             TempData["Error"] = string.Join(" ", result.Errors.Select(e => e.Description));
@@ -372,8 +386,8 @@ public class AdminController : Controller
         request.ReviewedById = admin?.Id;
         await _db.SaveChangesAsync();
 
-        TempData["Success"] = $"{request.FullName} approved — login: {request.Email} / default password: {DefaultSignupPassword} " +
-            "(share this with the user; more companies or a different password can be set from Edit User).";
+        TempData["Success"] = $"{request.FullName} approved — they can log in with {request.Email} and the password they set at signup " +
+            "(more companies or a password reset can be done from Edit User).";
         return RedirectToAction(nameof(SignupRequests));
     }
 

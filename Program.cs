@@ -14,11 +14,16 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 // Identity
 builder.Services.AddIdentity<AppUser, IdentityRole>(options =>
 {
-    options.Password.RequireDigit = false;
-    options.Password.RequireLowercase = false;
-    options.Password.RequireUppercase = false;
+    // "Standard" combination: 8+ chars, mixing upper/lower case and a digit.
+    // Not requiring a symbol too — keeps it approachable for a signup form
+    // while still ruling out plain dictionary words. Enforced everywhere a
+    // password is set via UserManager (self-signup, Admin's Create/Edit
+    // User) since this is Identity's own global policy, not a one-off check.
+    options.Password.RequireDigit = true;
+    options.Password.RequireLowercase = true;
+    options.Password.RequireUppercase = true;
     options.Password.RequireNonAlphanumeric = false;
-    options.Password.RequiredLength = 6;
+    options.Password.RequiredLength = 8;
     options.Lockout.MaxFailedAccessAttempts = 5;
     options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(5);
 })

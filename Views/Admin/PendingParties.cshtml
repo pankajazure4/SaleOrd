@@ -87,55 +87,6 @@
                                         <i class="bi bi-x-lg"></i> Reject
                                     </button>
                                 </div>
-
-                                <!-- Approve modal -->
-                                <div class="modal fade" id="approveModal@(p.LedgerId)" tabindex="-1">
-                                    <div class="modal-dialog modal-dialog-centered">
-                                        <div class="modal-content">
-                                            <form method="post" asp-action="ApproveParty">
-                                                @Html.AntiForgeryToken()
-                                                <input type="hidden" name="id" value="@p.LedgerId" />
-                                                <div class="modal-header">
-                                                    <h6 class="modal-title">Approve @p.LedgerName</h6>
-                                                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                                                </div>
-                                                <div class="modal-body">
-                                                    <div class="text-muted small">
-                                                        This makes the party usable in Sale Orders and pushes it to Tally as a new ledger master.
-                                                    </div>
-                                                </div>
-                                                <div class="modal-footer">
-                                                    <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-                                                    <button type="submit" class="btn btn-success btn-sm">Approve</button>
-                                                </div>
-                                            </form>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <!-- Reject modal -->
-                                <div class="modal fade" id="rejectModal@(p.LedgerId)" tabindex="-1">
-                                    <div class="modal-dialog modal-dialog-centered">
-                                        <div class="modal-content">
-                                            <form method="post" asp-action="RejectParty">
-                                                @Html.AntiForgeryToken()
-                                                <input type="hidden" name="id" value="@p.LedgerId" />
-                                                <div class="modal-header">
-                                                    <h6 class="modal-title">Reject @p.LedgerName</h6>
-                                                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                                                </div>
-                                                <div class="modal-body">
-                                                    <label class="form-label small fw-semibold">Reason (optional)</label>
-                                                    <textarea name="reason" class="form-control" rows="2" placeholder="Optional note"></textarea>
-                                                </div>
-                                                <div class="modal-footer">
-                                                    <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-                                                    <button type="submit" class="btn btn-danger btn-sm">Reject</button>
-                                                </div>
-                                            </form>
-                                        </div>
-                                    </div>
-                                </div>
                             }
                         </td>
                     </tr>
@@ -144,3 +95,58 @@
         </table>
     </div>
 </div>
+
+@* Modals live outside .table-responsive on purpose — see SignupRequests.cshtml
+   for why: overflow-x:auto ancestors break position:fixed modals on iOS
+   Safari/WebKit specifically (desktop + Android Chrome, both Blink, are fine). *@
+@foreach (var p in Model.Where(p => p.ApprovalStatus == SaleOrd.Models.Domain.LedgerApprovalStatus.Pending))
+{
+    <!-- Approve modal -->
+    <div class="modal fade" id="approveModal@(p.LedgerId)" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <form method="post" asp-action="ApproveParty">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="id" value="@p.LedgerId" />
+                    <div class="modal-header">
+                        <h6 class="modal-title">Approve @p.LedgerName</h6>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="text-muted small">
+                            This makes the party usable in Sale Orders and pushes it to Tally as a new ledger master.
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-success btn-sm">Approve</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reject modal -->
+    <div class="modal fade" id="rejectModal@(p.LedgerId)" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <form method="post" asp-action="RejectParty">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="id" value="@p.LedgerId" />
+                    <div class="modal-header">
+                        <h6 class="modal-title">Reject @p.LedgerName</h6>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <label class="form-label small fw-semibold">Reason (optional)</label>
+                        <textarea name="reason" class="form-control" rows="2" placeholder="Optional note"></textarea>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-danger btn-sm">Reject</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+}

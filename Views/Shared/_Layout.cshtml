@@ -8,18 +8,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>@ViewData["Title"] - SaleOrder</title>
     <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css" />
+    <link rel="stylesheet" href="~/lib/bootstrap-icons/font/bootstrap-icons.min.css" />
+    <link rel="stylesheet" href="~/lib/toastr/toastr.min.css" />
     <link rel="stylesheet" href="~/css/app.css" asp-append-version="true" />
     @await RenderSectionAsync("Styles", required: false)
 </head>
+@{
+    // Read once, up here, so both the loader below and the topbar further
+    // down (inside the authenticated block) can use the same value instead
+    // of querying it twice per page.
+    var _logoUrl = await _db.AppSettings.Where(s => s.Key == "LogoUrl").Select(s => s.Value).FirstOrDefaultAsync();
+}
 <body>
-    <!-- Site Loader Overlay -->
+    <!-- Site Loader Overlay — see the hide script near </body> for why this
+         no longer waits on window.load (external resources, even now-local
+         ones, are not what gates this) and hides fast instead. -->
     <div id="siteLoader" class="site-loader-overlay">
         <div class="site-loader-spinner">
             <div class="spinner-ring"></div>
             <div class="spinner-logo">
-                <i class="bi bi-bag-check-fill"></i>
+                @if (!string.IsNullOrEmpty(_logoUrl))
+                {
+                    <img src="@_logoUrl" alt="Logo" />
+                }
+                else
+                {
+                    <i class="bi bi-bag-check-fill"></i>
+                }
             </div>
             <div class="spinner-text">SaleOrder</div>
         </div>
@@ -34,7 +49,6 @@
     else if (User.IsInRole(SaleOrd.Models.Domain.AppRoles.Manager)) _userRole = SaleOrd.Models.Domain.AppRoles.Manager;
     else _userRole = SaleOrd.Models.Domain.AppRoles.Salesman;
     var _perms = await _permSvc.GetAllowedKeysAsync(_userRole);
-    var _logoUrl = await _db.AppSettings.Where(s => s.Key == "LogoUrl").Select(s => s.Value).FirstOrDefaultAsync();
 
     <!-- ── Top bar ── -->
     <header class="topbar">
@@ -71,6 +85,32 @@
             </form>
         </div>
     </header>
+    <script>
+        // Everything below (.app-body's top padding, .sidebar's top offset)
+        // reads --nav-h to know how much room the fixed topbar actually
+        // takes up. Rather than trust the 56px CSS default is still correct
+        // once real content (a logo, a long company name) is in there, this
+        // measures the topbar's true rendered height right now and writes
+        // it back — so downstream layout is always right, not assumed.
+        // Runs inline/synchronously here (not deferred to the bottom of the
+        // page) specifically so it applies before the browser paints,
+        // avoiding any visible flash of misaligned content.
+        (function () {
+            var topbar = document.querySelector('.topbar');
+            if (!topbar) return;
+            function syncNavHeight() {
+                document.documentElement.style.setProperty('--nav-h', topbar.offsetHeight + 'px');
+            }
+            syncNavHeight();
+            window.addEventListener('resize', syncNavHeight);
+            window.addEventListener('load', syncNavHeight); // catches the logo image finishing load
+            var logo = topbar.querySelector('.brand-logo-img');
+            if (logo) {
+                logo.addEventListener('load', syncNavHeight);
+                logo.addEventListener('error', syncNavHeight);
+            }
+        })();
+    </script>
 
     <!-- ── Sidebar overlay (mobile tap-to-close) ── -->
     <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
@@ -256,7 +296,7 @@ else
 
 <script src="~/lib/jquery/dist/jquery.min.js"></script>
 <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
+<script src="~/lib/toastr/toastr.min.js"></script>
 <script src="~/js/site.js" asp-append-version="true"></script>
 <script>
 toastr.options = { "positionClass": "toast-top-right", "timeOut": 3000, "progressBar": true };
@@ -275,31 +315,49 @@ function showToast(type, msg, title) {
 <script>
 function toggleSidebar() {
     var s = document.getElementById('sidebar'), o = document.getElementById('sidebarOverlay');
+    var opening = !s.classList.contains('open');
     s.classList.toggle('open'); o.classList.toggle('show');
+    document.body.classList.toggle('sidebar-locked', opening);
 }
 function closeSidebar() {
     document.getElementById('sidebar').classList.remove('open');
     document.getElementById('sidebarOverlay').classList.remove('show');
+    document.body.classList.remove('sidebar-locked');
 }
 </script>
 @await RenderSectionAsync("Scripts", required: false)
 <script>
-    // Fade out loader on window load
-    window.addEventListener('load', function() {
+    // This used to wait for window.load, which only fires once every
+    // resource on the page — including the two external CDN links this
+    // layout used to pull in for icons/toasts — has finished. If a CDN was
+    // ever slow or briefly unreachable, load could take a long time (or
+    // effectively hang), which is exactly why the loader would sometimes
+    // keep spinning well after the page was already fully visible and
+    // usable underneath it. Those assets are vendored locally now (see the
+    // <link>/<script> tags above), removing that dependency — but on top of
+    // that, this script tag sits right before </body>, so by the time it
+    // runs, everything the page needs to look complete has already been
+    // parsed; there's nothing left to wait for. A short minimum-display
+    // delay just avoids an instant, jarring flash on pages that render
+    // very fast.
+    (function () {
         var loader = document.getElementById('siteLoader');
-        if (loader) {
+        if (!loader) return;
+        setTimeout(function () {
             loader.classList.add('fade-out');
-            setTimeout(function() { loader.style.display = 'none'; }, 300);
-        }
-    });
-    // Fallback: hide loader after 3 seconds anyway to avoid stuck loading screen
+            setTimeout(function () { loader.style.display = 'none'; }, 300);
+        }, 150);
+    })();
+    // Absolute safety net in case the above never ran for some reason —
+    // far shorter than it used to be (1.5s vs 3s), since we no longer
+    // expect to actually need it.
     setTimeout(function() {
         var loader = document.getElementById('siteLoader');
         if (loader && !loader.classList.contains('fade-out')) {
             loader.classList.add('fade-out');
             setTimeout(function() { loader.style.display = 'none'; }, 300);
         }
-    }, 3000);
+    }, 1500);
 </script>
 </body>
 </html>

@@ -13,15 +13,17 @@ public class AccountController : Controller
 {
     private readonly SignInManager<AppUser> _signIn;
     private readonly UserManager<AppUser> _userManager;
+    private readonly IPasswordHasher<AppUser> _passwordHasher;
     private readonly AppDbContext _db;
     private readonly UserActivityService _activity;
     private readonly LicenseService _license;
 
     public AccountController(SignInManager<AppUser> signIn, UserManager<AppUser> userManager,
-        AppDbContext db, UserActivityService activity, LicenseService license)
+        IPasswordHasher<AppUser> passwordHasher, AppDbContext db, UserActivityService activity, LicenseService license)
     {
         _signIn = signIn;
         _userManager = userManager;
+        _passwordHasher = passwordHasher;
         _db = db;
         _activity = activity;
         _license = license;
@@ -104,6 +106,18 @@ public class AccountController : Controller
         else if (await _db.SignupRequests.AnyAsync(r => r.PhoneNumber == model.PhoneNumber && r.Status == SignupRequestStatus.Pending))
             ModelState.AddModelError("PhoneNumber", "A signup request with this mobile number is already pending approval.");
 
+        // SignUpVM's [MinLength(8)] is just the client-visible half — the
+        // real rule is whatever Identity is actually configured with
+        // (Program.cs), checked here the same way UserManager.CreateAsync
+        // would, since no AppUser exists yet for that overload to run against.
+        foreach (var validator in _userManager.PasswordValidators)
+        {
+            var result = await validator.ValidateAsync(_userManager, null!, model.Password);
+            if (!result.Succeeded)
+                foreach (var e in result.Errors)
+                    ModelState.AddModelError("Password", e.Description);
+        }
+
         if (!ModelState.IsValid)
             return View(model);
 
@@ -112,12 +126,19 @@ public class AccountController : Controller
         // AdminController.ApproveSignup) — OrganizationName here is just the
         // signer's own free-text answer to "who do you work for", shown to
         // the Admin for context, not used to drive access.
+        //
+        // Password is hashed right here and never touched again in plain
+        // text — PasswordHasher<TUser>.HashPassword doesn't actually read
+        // anything off the user argument (it's PBKDF2 + a random salt), so
+        // passing null is safe; there's no AppUser to hash against yet since
+        // one won't exist until Admin approval.
         _db.SignupRequests.Add(new SignupRequest
         {
             FullName = model.FullName,
             Email = model.Email,
             PhoneNumber = model.PhoneNumber,
-            OrganizationName = model.OrganizationName
+            OrganizationName = model.OrganizationName,
+            PasswordHash = _passwordHasher.HashPassword(null!, model.Password)
         });
         await _db.SaveChangesAsync();
 

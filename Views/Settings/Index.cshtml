@@ -360,12 +360,14 @@ function saveTallyUrl() {
     });
 }
 
-function checkStatus() {
+function checkStatus(silent) {
     var url = $('#tallyUrl').val().trim() || '@ViewBag.DefaultUrl';
     $.post('/Settings/CheckStatus', { tallyUrl: url, __RequestVerificationToken: csrf }, function(r) {
-        var type = r.status === 'warning' ? 'warning' : (r.reachable ? 'success' : 'danger');
-        var title = r.status === 'warning' ? 'Open company needed' : (r.reachable ? 'Online' : 'Offline');
-        showToast(type, r.message, title);
+        if (!silent) {
+            var type = r.status === 'warning' ? 'warning' : (r.reachable ? 'success' : 'danger');
+            var title = r.status === 'warning' ? 'Open company needed' : (r.reachable ? 'Online' : 'Offline');
+            showToast(type, r.message, title);
+        }
 
         // Auto-select the matched company in the flush dropdown
         if (r.matchedCompanyId && r.matchedCompanyId > 0) {
@@ -385,8 +387,15 @@ function checkStatus() {
             info.hide();
         }
     }).fail(function() {
-        showToast('danger', 'Request failed', 'Offline');
+        if (!silent) showToast('danger', 'Request failed', 'Offline');
     });
 }
+
+// This used to run server-side and block the whole page on a live Tally
+// call before anything rendered. Now the page shows up immediately with a
+// safe default, and this quietly re-checks in the background right after —
+// same end result (matched company gets pre-selected, status badge
+// appears), just never gates getting to Settings on Tally being reachable.
+$(function() { checkStatus(true); });
 </script>
 }

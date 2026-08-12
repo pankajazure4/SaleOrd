@@ -38,14 +38,18 @@ public static class LicensePortalClient
         };
         var json = JsonSerializer.Serialize(payload);
 
+        // Worst case (both attempts needed) used to be 15s+30s = 45s of a
+        // frozen, unresponsive window on a slow/unreachable portal. Trimmed
+        // to 6s+10s — still generous for a real network, far less punishing
+        // when it's not reachable at all (mirrored from SaleOrd web app).
         string responseBody;
         try
         {
-            responseBody = await PostAsync(url, json, useProxy: true, seconds: 15);
+            responseBody = await PostAsync(url, json, useProxy: true, seconds: 6);
         }
         catch
         {
-            responseBody = await PostAsync(url, json, useProxy: false, seconds: 30);
+            responseBody = await PostAsync(url, json, useProxy: false, seconds: 10);
         }
 
         var parsed = JsonSerializer.Deserialize<PortalValidateResponse>(

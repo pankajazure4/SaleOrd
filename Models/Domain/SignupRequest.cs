@@ -12,6 +12,14 @@ public class SignupRequest
     public string Email { get; set; } = string.Empty;
     public string? PhoneNumber { get; set; }
 
+    // The signer's own chosen password, already hashed at Sign Up time
+    // (AccountController.SignUp, via IPasswordHasher<AppUser>) — never
+    // stored in plain text, and never re-entered by anyone. On approval
+    // (AdminController.ApproveSignup) this hash is copied straight onto the
+    // new AppUser, so the user logs in with the password they set here, not
+    // a default one an Admin has to hand them separately.
+    public string PasswordHash { get; set; } = string.Empty;
+
     // Free text the signer types themselves — "which company/organization do
     // you belong to" — not a pick from our own internal Companies (Tally
     // territories) list. That assignment is now an Admin-only decision made

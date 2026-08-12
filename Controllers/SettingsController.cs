@@ -36,7 +36,10 @@ public class SettingsController : Controller
 
     public async Task<IActionResult> Index()
     {
-        var saved = await _db.AppSettings.Where(s => s.Key == "TallyUrl").Select(s => s.Value).FirstOrDefaultAsync();
+        // One round-trip for every AppSettings row instead of a separate
+        // query just for TallyUrl plus another for everything else.
+        var allSettings = await _db.AppSettings.ToListAsync();
+        var saved = allSettings.FirstOrDefault(s => s.Key == "TallyUrl")?.Value;
         var defaultUrl = $"http://{_config["TallySettings:DefaultIp"] ?? "localhost"}:{_config.GetValue<int>("TallySettings:DefaultPort", 9000)}";
         var tallyUrl   = saved ?? defaultUrl;
         var companies  = await _db.Companies
@@ -44,19 +47,15 @@ public class SettingsController : Controller
             .OrderBy(c => c.CompanyName)
             .ToListAsync();
 
-        // Try to detect the currently open Tally company and pre-select it
+        // Detecting which company is currently open in Tally used to happen
+        // here too, blocking every single page load on a live network call
+        // to the client's Tally instance (up to 5s, every time, whether or
+        // not anyone needed it). It's pure redundancy: the page's own "Check
+        // Status" button (checkStatus() in the view) already does the exact
+        // same detection over AJAX and sets this same dropdown — so it now
+        // runs there instead, auto-fired once on page load (still automatic,
+        // just no longer blocking the page itself from rendering first).
         int selectedCompanyId = companies.FirstOrDefault()?.CompanyId ?? 0;
-        try
-        {
-            var (reachable, openNames) = await _tally.CheckStatusAsync(tallyUrl);
-            if (reachable && openNames.Any())
-            {
-                var match = companies.FirstOrDefault(c =>
-                    openNames.Any(n => string.Equals(n.Trim(), c.TallyCompanyName.Trim(), StringComparison.OrdinalIgnoreCase)));
-                if (match != null) selectedCompanyId = match.CompanyId;
-            }
-        }
-        catch { /* silently ignore if Tally is unreachable */ }
 
         ViewBag.TallyUrl          = tallyUrl;
         ViewBag.DefaultUrl        = defaultUrl;
@@ -64,7 +63,6 @@ public class SettingsController : Controller
         ViewBag.SelectedCompanyId = selectedCompanyId;
 
         // Load tax defaults for display
-        var allSettings = await _db.AppSettings.ToListAsync();
         ViewBag.DefaultTaxType     = allSettings.FirstOrDefault(s => s.Key == "DefaultTaxType")?.Value ?? "None";
         ViewBag.TaxLedgerIGST     = allSettings.FirstOrDefault(s => s.Key == "TaxLedgerIGST")?.Value ?? "IGST";
         ViewBag.TaxLedgerCGST     = allSettings.FirstOrDefault(s => s.Key == "TaxLedgerCGST")?.Value ?? "CGST";
