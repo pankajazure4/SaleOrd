@@ -32,9 +32,12 @@
     </div>
     <div class="d-flex gap-2 align-items-center">
         <span class="badge bg-@statusClass">@Model.Status</span>
-        <a href="/SaleOrder/Print/@Model.SaleOrderId" target="_blank" class="btn btn-sm btn-outline-secondary no-print" title="Print">
-            <i class="bi bi-printer"></i>
-        </a>
+        @if ((bool)ViewBag.CanPrint)
+        {
+            <a href="/SaleOrder/Print/@Model.SaleOrderId" target="_blank" class="btn btn-sm btn-outline-secondary no-print" title="Print">
+                <i class="bi bi-printer"></i>
+            </a>
+        }
     </div>
 </div>
 
@@ -188,8 +191,14 @@
 
 <!-- Actions -->
 @{
+    // Error orders can always be edited regardless of the deadline — that's
+    // the only recovery path now (there's no separate "Resubmit" button;
+    // editing an order already resets it to Pending on save, so the sync
+    // agent picks it up on its next cycle).
     bool canEditNow = !Model.IsInvoiced
-        && (Model.EditDeadline == null || DateTime.Now <= Model.EditDeadline.Value);
+        && (Model.Status.ToString() == "Error"
+            || Model.EditDeadline == null
+            || DateTime.Now <= Model.EditDeadline.Value);
 }
 <div class="form-actions">
     @if (canEditNow)
@@ -197,15 +206,6 @@
         <a href="/SaleOrder/Edit/@Model.SaleOrderId" class="btn btn-primary">
             <i class="bi bi-pencil me-1"></i>Edit
         </a>
-    }
-    @if (Model.Status.ToString() == "Error")
-    {
-        <form method="post" asp-action="Resubmit" asp-route-id="@Model.SaleOrderId">
-            @Html.AntiForgeryToken()
-            <button type="submit" class="btn btn-warning">
-                <i class="bi bi-arrow-clockwise me-1"></i>Resubmit to Tally
-            </button>
-        </form>
     }
     @if (!Model.IsInvoiced && Model.Status.ToString() != "Synced")
     {

@@ -18,6 +18,7 @@ public static class AppPermissions
     public const string ReportsUserWise  = "Reports.UserWise";
     public const string ReportsPending   = "Reports.Pending";
     public const string ReportsUserPerf  = "Reports.UserPerf";
+    public const string ReportsTransactionCompare = "Reports.TransactionCompare";
 
     // Masters
     public const string MastersParties   = "Masters.Parties";
@@ -25,6 +26,11 @@ public static class AppPermissions
 
     // Prints
     public const string PrintSaleOrder   = "Print.SaleOrder";
+
+    // Export — separate from the Reports.* view permissions above on
+    // purpose: a role can be allowed to VIEW a report without being allowed
+    // to pull its data out of the system as a file.
+    public const string ReportsExport    = "Reports.Export";
 
     // Admin
     public const string AdminUserActivity = "Admin.UserActivity";
@@ -42,9 +48,11 @@ public static class AppPermissions
         (ReportsUserWise,    "User-wise Report",              "Reports"),
         (ReportsPending,     "Pending Orders Report",         "Reports"),
         (ReportsUserPerf,    "User Performance Report",       "Reports"),
+        (ReportsTransactionCompare, "Order vs Invoice Report", "Reports"),
         (MastersParties,     "Parties",                       "Masters"),
         (MastersItems,       "Stock Items",                   "Masters"),
         (PrintSaleOrder,     "Print Sale Order",              "Prints"),
+        (ReportsExport,      "Export Reports (CSV)",          "Prints"),
         (AdminUserActivity,  "View User Activity",            "Admin"),
     };
 
@@ -60,6 +68,7 @@ public static class AppPermissions
         ReportsSummary,
         ReportsPartyWise,
         ReportsDayWise,
+        ReportsTransactionCompare,
         MastersParties,
         MastersItems,
         PrintSaleOrder,

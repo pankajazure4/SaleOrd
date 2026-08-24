@@ -42,7 +42,7 @@
         </div>
         <div class="col-6 col-md-2">
             <label class="form-label small fw-semibold">Action</label>
-            <select name="action" class="form-select form-select-sm">
+            <select name="activityAction" class="form-select form-select-sm">
                 <option value="">All Actions</option>
                 @foreach (string a in ViewBag.Actions)
                 {
@@ -75,7 +75,7 @@
 @{
     int total2 = ViewBag.Total, page2 = ViewBag.Page, pageSize2 = ViewBag.PageSize;
     int totalPages2 = (int)Math.Ceiling((double)total2 / pageSize2);
-    string qBase2 = $"userId={ViewBag.UserId}&action={ViewBag.Action}&from={ViewBag.From}&to={ViewBag.To}";
+    string qBase2 = $"userId={ViewBag.UserId}&activityAction={ViewBag.Action}&from={ViewBag.From}&to={ViewBag.To}";
 }
 
 @if (!Model.Any())

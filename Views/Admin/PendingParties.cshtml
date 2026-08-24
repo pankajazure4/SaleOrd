@@ -8,7 +8,7 @@
 <div class="page-header">
     <div>
         <h5>Party Approvals</h5>
-        <div class="page-title-sub">@pendingCount pending of @Model.Count() total — parties created from Masters &gt; Parties aren't usable in Sale Orders until approved here</div>
+        <div class="page-title-sub">@pendingCount pending of @Model.Count() manually-created — parties created from Masters &gt; Parties aren't usable in Sale Orders until approved here</div>
     </div>
 </div>
 
@@ -21,16 +21,29 @@
     <div class="alert alert-danger py-2 small">@TempData["Error"]</div>
 }
 
+<form method="get" class="card p-2 mb-3">
+    <div class="input-group input-group-sm">
+        <span class="input-group-text bg-transparent"><i class="bi bi-search"></i></span>
+        <input type="text" name="q" class="form-control" placeholder="Search by party, outlet, GST or contact…" value="@ViewBag.SearchTerm" />
+        <button type="submit" class="btn btn-outline-secondary">Search</button>
+        @if (!string.IsNullOrWhiteSpace((string?)ViewBag.SearchTerm))
+        {
+            <a href="@Url.Action("PendingParties")" class="btn btn-outline-secondary">Clear</a>
+        }
+    </div>
+</form>
+
 <div class="card">
     <div class="table-responsive">
         <table class="table table-hover mb-0">
             <thead>
                 <tr>
                     <th>Party</th>
-                    <th class="d-none d-md-table-cell">GST / FSSAI</th>
-                    <th class="d-none d-md-table-cell">Contact</th>
+                    <th>GST / FSSAI</th>
+                    <th>Contact</th>
                     <th>Status</th>
                     <th class="d-none d-md-table-cell">Submitted</th>
+                    <th class="d-none d-md-table-cell">Tally Synced</th>
                     <th class="text-end">Actions</th>
                 </tr>
             </thead>
@@ -46,9 +59,16 @@
                     <tr>
                         <td>
                             <div class="fw-semibold" style="font-size:13px">@p.LedgerName</div>
-                            <div class="d-md-none text-muted" style="font-size:11px">@p.Address</div>
+                            @if (!string.IsNullOrWhiteSpace(p.OutletName))
+                            {
+                                <div class="text-muted" style="font-size:11px">Outlet: @p.OutletName</div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(p.Address) || !string.IsNullOrWhiteSpace(p.State))
+                            {
+                                <div class="text-muted" style="font-size:11px">@p.Address@(!string.IsNullOrWhiteSpace(p.Address) && !string.IsNullOrWhiteSpace(p.State) ? ", " : "")@p.State</div>
+                            }
                         </td>
-                        <td class="d-none d-md-table-cell text-muted small">
+                        <td class="text-muted small">
                             @if (!string.IsNullOrWhiteSpace(p.GSTNo)) { <div>GST: @p.GSTNo</div> }
                             @if (!string.IsNullOrWhiteSpace(p.FSSAINo))
                             {
@@ -57,13 +77,13 @@
                                     @if (p.HasFssaiDocument)
                                     {
                                         <a href="@Url.Action("FssaiDocument", "Masters", new { ledgerId = p.LedgerId })" target="_blank" class="ms-1" title="View FSSAI document">
-                                            <i class="bi bi-file-earmark-pdf-fill text-danger"></i>
+                                            <i class="bi bi-paperclip text-primary"></i>
                                         </a>
                                     }
                                 </div>
                             }
                         </td>
-                        <td class="d-none d-md-table-cell text-muted small">@p.MobileNo</td>
+                        <td class="text-muted small">@p.MobileNo</td>
                         <td>
                             <span class="badge bg-@statusBadge">@p.ApprovalStatus</span>
                             @if (p.ApprovalStatus == SaleOrd.Models.Domain.LedgerApprovalStatus.Rejected && !string.IsNullOrWhiteSpace(p.RejectionReason))
@@ -76,6 +96,20 @@
                             }
                         </td>
                         <td class="d-none d-md-table-cell text-muted small">@p.LastSyncedAt.ToString("dd-MMM-yyyy hh:mm tt")</td>
+                        <td class="d-none d-md-table-cell text-muted small">
+                            @if (p.TallyPushedAt.HasValue)
+                            {
+                                @p.TallyPushedAt.Value.ToString("dd-MMM-yyyy hh:mm tt")
+                            }
+                            else if (p.ApprovalStatus == SaleOrd.Models.Domain.LedgerApprovalStatus.Approved)
+                            {
+                                <span class="badge bg-warning text-dark">Queued for Agent</span>
+                            }
+                            else
+                            {
+                                <span>—</span>
+                            }
+                        </td>
                         <td class="text-end">
                             @if (p.ApprovalStatus == SaleOrd.Models.Domain.LedgerApprovalStatus.Pending)
                             {
@@ -113,8 +147,45 @@
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
+                        <div class="small mb-3 p-2 rounded-3" style="background:var(--bg)">
+                            @if (!string.IsNullOrWhiteSpace(p.OutletName))
+                            {
+                                <div class="d-flex justify-content-between"><span class="text-muted">Outlet</span><span>@p.OutletName</span></div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(p.GSTNo))
+                            {
+                                <div class="d-flex justify-content-between"><span class="text-muted">GST</span><span>@p.GSTNo</span></div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(p.FSSAINo))
+                            {
+                                <div class="d-flex justify-content-between">
+                                    <span class="text-muted">FSSAI</span>
+                                    <span>
+                                        @p.FSSAINo
+                                        @if (p.HasFssaiDocument)
+                                        {
+                                            <a href="@Url.Action("FssaiDocument", "Masters", new { ledgerId = p.LedgerId })" target="_blank" class="ms-1" title="View FSSAI document">
+                                                <i class="bi bi-paperclip text-primary"></i>
+                                            </a>
+                                        }
+                                    </span>
+                                </div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(p.MobileNo))
+                            {
+                                <div class="d-flex justify-content-between"><span class="text-muted">Contact</span><span>@p.MobileNo</span></div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(p.Address))
+                            {
+                                <div class="d-flex justify-content-between"><span class="text-muted">Address</span><span class="text-end">@p.Address</span></div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(p.State))
+                            {
+                                <div class="d-flex justify-content-between"><span class="text-muted">State</span><span>@p.State</span></div>
+                            }
+                        </div>
                         <div class="text-muted small">
-                            This makes the party usable in Sale Orders and pushes it to Tally as a new ledger master.
+                            This makes the party usable in Sale Orders immediately. It will be pushed to Tally as a new ledger master by the sync agent shortly after.
                         </div>
                     </div>
                     <div class="modal-footer">

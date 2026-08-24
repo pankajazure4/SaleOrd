@@ -72,6 +72,15 @@
             @await Component.InvokeAsync("CompanySwitcher")
         </div>
 
+        <!-- Last Tally sync time — refreshes itself in the background, no
+             page reload needed. Text only (no "Sync Now" trigger here on
+             purpose — TallySync:Mode=Agent means the web app doesn't talk
+             to Tally itself; this just reflects what the Agent last did). -->
+        <div class="d-none d-md-flex align-items-center gap-1 text-white-50 small me-2 flex-shrink-0" id="topbarSyncStatus" title="Last master sync">
+            <i class="bi bi-arrow-repeat"></i>
+            <span id="topbarSyncTime">—</span>
+        </div>
+
         <div class="d-flex align-items-center gap-2 flex-shrink-0">
             <div class="d-none d-md-flex align-items-center gap-1 text-white-50 small">
                 <i class="bi bi-person-circle"></i>
@@ -109,6 +118,22 @@
                 logo.addEventListener('load', syncNavHeight);
                 logo.addEventListener('error', syncNavHeight);
             }
+        })();
+
+        // Last-sync time in the topbar — polls in the background and
+        // updates in place, no page reload. Plain fetch (not jQuery) since
+        // this runs before jQuery is guaranteed loaded this early in the page.
+        (function () {
+            var el = document.getElementById('topbarSyncTime');
+            if (!el) return;
+            function refresh() {
+                fetch('/api/sync/status', { headers: { 'Accept': 'application/json' } })
+                    .then(function (r) { return r.ok ? r.json() : null; })
+                    .then(function (data) { if (data) el.textContent = data.lastSync; })
+                    .catch(function () { /* leave last-known value showing */ });
+            }
+            refresh();
+            setInterval(refresh, 60000);
         })();
     </script>
 
@@ -203,6 +228,12 @@
                     {
                         <a href="/Reports/Pending" class="sidebar-link sidebar-sub @(activePage == "ReportsPending" ? "active" : "")">
                             <i class="bi bi-hourglass-split"></i>Pending Orders
+                        </a>
+                    }
+                    @if (_perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsTransactionCompare))
+                    {
+                        <a href="/Reports/TransactionCompare" class="sidebar-link sidebar-sub @(activePage == "ReportsTransactionCompare" ? "active" : "")">
+                            <i class="bi bi-arrow-left-right"></i>Order vs Invoice
                         </a>
                     }
                     @if (_perms.Contains(SaleOrd.Models.Domain.AppPermissions.ReportsUserPerf) && _userRole != SaleOrd.Models.Domain.AppRoles.Salesman)

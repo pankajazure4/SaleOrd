@@ -15,6 +15,14 @@ public class AgentConfig
     public int MasterSyncIntervalMinutes { get; set; } = 30;
     public int OrderPushIntervalMinutes { get; set; } = 3;
 
+    // 0 = disabled — rates sync only runs when someone clicks "Sync Rates"
+    // manually (the original behaviour, before this setting existed). Not
+    // included in the regular master cycle on purpose — see
+    // SyncOrchestrator.RunMasterSyncAsync's comment on why the voucher
+    // inventory backfill was split out (it's slow enough to starve order
+    // push if it shares a timer/lock with anything time-sensitive).
+    public int VoucherRatesSyncIntervalMinutes { get; set; } = 0;
+
     public bool StartMinimized { get; set; } = false;
     public bool AutoStartWithWindows { get; set; } = true;
 

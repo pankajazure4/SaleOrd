@@ -25,6 +25,7 @@ public class FrmMain : Form
     private Label _lblRunState = new();
     private Button _btnStartStop = new();
     private Button _btnSyncNow = new();
+    private Button _btnSyncRates = new();
 
     // Config tab controls
     private TextBox _txtSqlServer = new();
@@ -35,6 +36,7 @@ public class FrmMain : Form
     private TextBox _txtTallyUrl = new();
     private NumericUpDown _numMasterInterval = new();
     private NumericUpDown _numOrderInterval = new();
+    private NumericUpDown _numRatesInterval = new();
     private CheckBox _chkStartMinimized = new();
     private CheckBox _chkAutoStart = new();
     private Label _lblConfigMsg = new();
@@ -230,8 +232,19 @@ public class FrmMain : Form
         UiTheme.StyleButton(_btnSyncNow, UiTheme.Primary);
         _btnSyncNow.Margin = new Padding(10, 0, 0, 0);
         _btnSyncNow.Click += async (_, _) => await SyncNowClicked();
+        // Separate from Sync Now on purpose — item rate history
+        // (VoucherInventoryEntries, used for the last-sale-rate feature) can
+        // take minutes on a full historical backfill, and used to run inline
+        // inside every master sync, regularly starving order push out of its
+        // own cycle since they share one lock. Run it here, on its own time,
+        // whenever's convenient — not tied to the master/order schedule.
+        _btnSyncRates.Text = "💰  Sync Rates";
+        UiTheme.StyleButton(_btnSyncRates, UiTheme.Info);
+        _btnSyncRates.Margin = new Padding(10, 0, 0, 0);
+        _btnSyncRates.Click += async (_, _) => await SyncRatesClicked();
         btnRow.Controls.Add(_btnStartStop);
         btnRow.Controls.Add(_btnSyncNow);
+        btnRow.Controls.Add(_btnSyncRates);
 
         controlGrid.Controls.Add(_lblRunState, 0, 0);
         controlGrid.Controls.Add(btnRow, 0, 1);
@@ -340,6 +353,11 @@ public class FrmMain : Form
         _numOrderInterval.Value = 3;
         _numOrderInterval.Width = 100;
         AddField(schedCfgGrid, "Order push (min)", _numOrderInterval);
+        _numRatesInterval.Minimum = 0;
+        _numRatesInterval.Maximum = 1440;
+        _numRatesInterval.Value = 0;
+        _numRatesInterval.Width = 100;
+        AddField(schedCfgGrid, "Sync Rates (min, 0=manual only)", _numRatesInterval);
         AddField(schedCfgGrid, "Start minimized", _chkStartMinimized);
         AddField(schedCfgGrid, "Start with Windows", _chkAutoStart);
 
@@ -424,6 +442,7 @@ public class FrmMain : Form
         var menu = new ContextMenuStrip();
         menu.Items.Add("Open", null, (_, _) => RestoreFromTray());
         menu.Items.Add("Sync Now", null, async (_, _) => await SyncNowClicked());
+        menu.Items.Add("Sync Rates", null, async (_, _) => await SyncRatesClicked());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => { _reallyExit = true; Close(); });
         _trayIcon.ContextMenuStrip = menu;
@@ -464,6 +483,7 @@ public class FrmMain : Form
         _txtTallyUrl.Text = _config.TallyUrl;
         _numMasterInterval.Value = Math.Clamp(_config.MasterSyncIntervalMinutes, 1, 1440);
         _numOrderInterval.Value = Math.Clamp(_config.OrderPushIntervalMinutes, 1, 1440);
+        _numRatesInterval.Value = Math.Clamp(_config.VoucherRatesSyncIntervalMinutes, 0, 1440);
         _chkStartMinimized.Checked = _config.StartMinimized;
         _chkAutoStart.Checked = _config.AutoStartWithWindows;
 
@@ -533,6 +553,7 @@ public class FrmMain : Form
         _config.TallyUrl = _txtTallyUrl.Text.Trim();
         _config.MasterSyncIntervalMinutes = (int)_numMasterInterval.Value;
         _config.OrderPushIntervalMinutes = (int)_numOrderInterval.Value;
+        _config.VoucherRatesSyncIntervalMinutes = (int)_numRatesInterval.Value;
         _config.StartMinimized = _chkStartMinimized.Checked;
         _config.AutoStartWithWindows = _chkAutoStart.Checked;
 
@@ -570,6 +591,13 @@ public class FrmMain : Form
         _btnSyncNow.Enabled = false;
         try { await _orchestrator.RunNowAsync(); }
         finally { _btnSyncNow.Enabled = true; }
+    }
+
+    private async Task SyncRatesClicked()
+    {
+        _btnSyncRates.Enabled = false;
+        try { await _orchestrator.RunRatesSyncNowAsync(); }
+        finally { _btnSyncRates.Enabled = true; }
     }
 
     private async Task TestSqlClicked()

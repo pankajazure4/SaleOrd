@@ -158,7 +158,7 @@ a { color: var(--primary); }
 .table-hover tbody tr:hover { background: #f8f9ff; }
 
 /* ── Status badges ─────────────────────────────────── */
-.badge-draft   { background: #9ca3af; }
+.badge-cancelled { background: #9ca3af; }
 .badge-pending { background: var(--warning); color: #fff; }
 .badge-synced  { background: var(--success); color: #fff; }
 .badge-error   { background: var(--danger); color: #fff; }
@@ -316,11 +316,13 @@ body.sidebar-locked { overflow: hidden; }
 .stat-red    { background: linear-gradient(135deg,#fff0f0,#ffd9d9); }
 .stat-purple { background: linear-gradient(135deg,#f8f0ff,#eed9ff); }
 .stat-teal   { background: linear-gradient(135deg,#f0fffe,#d9faf7); }
+.stat-indigo { background: linear-gradient(135deg,#f0f2ff,#dde2ff); }
 
 .icon-blue   { background: #dde4ff; color: var(--primary); }
 .icon-orange { background: #fde8cc; color: var(--warning); }
 .icon-green  { background: #ccf2e8; color: var(--success); }
 .icon-red    { background: #fdd; color: var(--danger); }
+.icon-indigo { background: #dde2ff; color: #3730a3; }
 
 /* ── Tally sync status panel ───────────────────────── */
 .sync-stat-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }

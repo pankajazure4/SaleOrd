@@ -152,6 +152,7 @@ public class PartyApprovalListVM
 {
     public int LedgerId { get; set; }
     public string LedgerName { get; set; } = string.Empty;
+    public string? OutletName { get; set; }
     public string? GSTNo { get; set; }
     public string? FSSAINo { get; set; }
     public bool HasFssaiDocument { get; set; }
@@ -163,4 +164,10 @@ public class PartyApprovalListVM
     public DateTime? ReviewedAt { get; set; }
     public string? ReviewedByName { get; set; }
     public string? RejectionReason { get; set; }
+
+    // Set by SaleOrd.SyncAgent once it has actually pushed this party into
+    // Tally as a new ledger master — distinct from LastSyncedAt (which the
+    // regular Tally master sync touches for every ledger). Null means
+    // Approved-but-not-pushed-yet, or still Pending/Rejected.
+    public DateTime? TallyPushedAt { get; set; }
 }

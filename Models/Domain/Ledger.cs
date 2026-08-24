@@ -6,6 +6,10 @@ public class Ledger
     public string LedgerName { get; set; } = string.Empty;
     public string Parent { get; set; } = string.Empty;
 
+    // Optional — local only, no Tally equivalent, same as FSSAINo below.
+    // Not required at creation (Masters > Parties).
+    public string? OutletName { get; set; }
+
     // Contact
     public string? Address { get; set; }
     public string? State { get; set; }
@@ -32,6 +36,19 @@ public class Ledger
     public string? RejectionReason { get; set; }
     public DateTime? ReviewedAt { get; set; }
     public string? ReviewedById { get; set; }
+
+    // True only for parties created via Masters > Parties (set once, at
+    // creation, by MastersController.CreateParty) — never set by Tally master
+    // sync, so it's the one reliable way to tell "created here" apart from
+    // the bulk of ledgers that arrived from Tally. Admin/PendingParties uses
+    // this to show only manually-created parties instead of the whole ledger
+    // table. TallyPushedAt is set by SaleOrd.SyncAgent once it has actually
+    // pushed this party into Tally as a new ledger master — approving a party
+    // here only flips ApprovalStatus; the Agent, not the web app, does the
+    // actual Tally push (the web app has no direct route to the client's
+    // Tally instance — see TallySync:Mode=Agent).
+    public bool IsManuallyCreated { get; set; }
+    public DateTime? TallyPushedAt { get; set; }
 
     // Financial
     public decimal CreditLimit { get; set; }

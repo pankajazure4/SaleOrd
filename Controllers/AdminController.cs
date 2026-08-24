@@ -416,18 +416,38 @@ public class AdminController : Controller
     // Party Master approval — a party created via Masters > Parties sits
     // Pending until reviewed here; only on approval does it become pickable
     // in Sale Orders (SaleOrderController.GetParties filters by
-    // ApprovalStatus) and only then does it get pushed to Tally — no point
-    // creating Tally master data for something that might get rejected.
-    public async Task<IActionResult> PendingParties()
+    // ApprovalStatus). The actual Tally push happens later, out-of-band, in
+    // SaleOrd.SyncAgent (see its manual-party-push step) — the web app has
+    // no direct route to the client's Tally instance (TallySync:Mode=Agent),
+    // so this screen only ever shows/approves the manually-created parties
+    // and never talks to Tally itself.
+    //
+    // IsManuallyCreated filters out the thousands of ordinary Tally-synced
+    // ledgers, which have nothing to do with this approval workflow.
+    public async Task<IActionResult> PendingParties(string? q)
     {
-        var parties = await _db.Ledgers
+        var query = _db.Ledgers
             .Include(l => l.ReviewedBy)
+            .Where(l => l.IsManuallyCreated);
+
+        if (!string.IsNullOrWhiteSpace(q))
+        {
+            var term = q.Trim();
+            query = query.Where(l =>
+                EF.Functions.Like(l.LedgerName, $"%{term}%") ||
+                (l.OutletName != null && EF.Functions.Like(l.OutletName, $"%{term}%")) ||
+                (l.GSTNo != null && EF.Functions.Like(l.GSTNo, $"%{term}%")) ||
+                (l.MobileNo != null && EF.Functions.Like(l.MobileNo, $"%{term}%")));
+        }
+
+        var parties = await query
             .OrderBy(l => l.ApprovalStatus == LedgerApprovalStatus.Pending ? 0 : 1) // Pending first
             .ThenByDescending(l => l.LastSyncedAt)
             .Select(l => new PartyApprovalListVM
             {
                 LedgerId = l.LedgerId,
                 LedgerName = l.LedgerName,
+                OutletName = l.OutletName,
                 GSTNo = l.GSTNo,
                 FSSAINo = l.FSSAINo,
                 HasFssaiDocument = l.FSSAIDocumentPath != null,
@@ -438,10 +458,12 @@ public class AdminController : Controller
                 LastSyncedAt = l.LastSyncedAt,
                 ReviewedAt = l.ReviewedAt,
                 ReviewedByName = l.ReviewedBy != null ? l.ReviewedBy.FullName : null,
-                RejectionReason = l.RejectionReason
+                RejectionReason = l.RejectionReason,
+                TallyPushedAt = l.TallyPushedAt
             })
             .ToListAsync();
 
+        ViewBag.SearchTerm = q;
         return View(parties);
     }
 
@@ -463,28 +485,20 @@ public class AdminController : Controller
 
         var admin = await _userManager.GetUserAsync(User);
 
-        var tallyUrl = await _db.AppSettings
-            .Where(s => s.Key == "TallyUrl")
-            .Select(s => s.Value)
-            .FirstOrDefaultAsync()
-            ?? "http://localhost:9000";
-
-        var fssaiUdfField = await _db.AppSettings
-            .Where(s => s.Key == "TallyFssaiUdfField")
-            .Select(s => s.Value)
-            .FirstOrDefaultAsync();
-
-        var (success, message) = await _tally.PushLedgerAsync(tallyUrl, ledger, ledger.Company.TallyCompanyName, fssaiUdfField);
-
+        // No Tally push here — approving only makes the party usable in Sale
+        // Orders locally. SaleOrd.SyncAgent picks up Approved + IsManuallyCreated
+        // + TallyPushedAt == null ledgers on its own cycle and pushes them to
+        // Tally, exactly like it already does for Sale Orders; it logs that
+        // attempt itself (SyncType "PartyApproval") so the trace still lands
+        // in Admin > Sync Logs, just from the side that actually talks to Tally.
         ledger.ApprovalStatus = LedgerApprovalStatus.Approved;
         ledger.ReviewedAt = DateTime.Now;
         ledger.ReviewedById = admin?.Id;
         ledger.RejectionReason = null;
+
         await _db.SaveChangesAsync();
 
-        TempData["Success"] = success
-            ? $"Party \"{ledger.LedgerName}\" approved and synced to Tally."
-            : $"Party \"{ledger.LedgerName}\" approved and is now usable in Sale Orders, but the Tally sync failed: {message}. Retry the sync later.";
+        TempData["Success"] = $"Party \"{ledger.LedgerName}\" approved and is now usable in Sale Orders. It will be pushed to Tally by the sync agent shortly.";
         return RedirectToAction(nameof(PendingParties));
     }
 
@@ -653,12 +667,24 @@ public class AdminController : Controller
     }
 
     // User Activity
-    public async Task<IActionResult> UserActivity(string? userId, string? action, DateTime? from, DateTime? to, int page = 1)
+    //
+    // BUG FIXED HERE: the filter parameter used to be named "action" — that
+    // collides with ASP.NET Core's own ambient route value of the same name
+    // (every MVC action invocation has RouteData.Values["action"] set to the
+    // method it routed to, which for this URL is literally "UserActivity").
+    // MVC's default value-provider order checks route values before the
+    // query string for a plain string parameter, so "action" was ALWAYS
+    // binding to "UserActivity" (the route name) instead of the query
+    // string's ?action=Login/etc — and since no ActivityActions constant is
+    // literally "UserActivity", `a.Action == action` matched zero rows on
+    // every single page load, filters or not, regardless of how much real
+    // data was in the table. Renamed to activityAction to stop colliding.
+    public async Task<IActionResult> UserActivity(string? userId, string? activityAction, DateTime? from, DateTime? to, int page = 1)
     {
         var query = _db.UserActivities.AsQueryable();
 
-        if (!string.IsNullOrEmpty(userId))  query = query.Where(a => a.UserId == userId);
-        if (!string.IsNullOrEmpty(action))  query = query.Where(a => a.Action == action);
+        if (!string.IsNullOrEmpty(userId))         query = query.Where(a => a.UserId == userId);
+        if (!string.IsNullOrEmpty(activityAction)) query = query.Where(a => a.Action == activityAction);
         if (from.HasValue) query = query.Where(a => a.CreatedAt >= from.Value.Date);
         if (to.HasValue)   query = query.Where(a => a.CreatedAt < to.Value.Date.AddDays(1));
 
@@ -674,7 +700,7 @@ public class AdminController : Controller
         ViewBag.Page     = page;
         ViewBag.PageSize = pageSize;
         ViewBag.UserId   = userId;
-        ViewBag.Action   = action;
+        ViewBag.Action   = activityAction;
         ViewBag.From     = from?.ToString("yyyy-MM-dd");
         ViewBag.To       = to?.ToString("yyyy-MM-dd");
         ViewBag.UserList = await _db.Users.OrderBy(u => u.FullName)

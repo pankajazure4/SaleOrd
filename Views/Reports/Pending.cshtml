@@ -30,9 +30,12 @@
             <i class="bi bi-clock-history me-1"></i>Pending / Error Orders
             <span class="badge bg-warning text-dark ms-2" id="pendingBadge" style="display:none"></span>
         </span>
-        <button class="btn btn-outline-success btn-sm border-0 p-0 px-2" onclick="exportTable('pendingTable','Pending_Orders')" title="Export CSV">
-            <i class="bi bi-file-earmark-excel-fill text-success"></i>
-        </button>
+        @if ((bool)ViewBag.CanExport)
+        {
+            <button class="btn btn-outline-success btn-sm border-0 p-0 px-2" onclick="exportTable('pendingTable','Pending_Orders')" title="Export CSV">
+                <i class="bi bi-file-earmark-excel-fill text-success"></i>
+            </button>
+        }
     </div>
     <div id="tableLoading" class="text-center py-4 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>
     <div class="table-responsive" id="tableContent" style="display:none">

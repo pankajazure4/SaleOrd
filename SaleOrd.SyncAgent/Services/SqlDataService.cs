@@ -1,3 +1,4 @@
+using System.Data;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using SaleOrd.SyncAgent.Models;
@@ -26,6 +27,11 @@ namespace SaleOrd.SyncAgent.Services;
 public class SqlDataService
 {
     private static string Normalize(string? v) => (v ?? "").Trim();
+
+    // DataTable/SqlBulkCopy has no concept of a C# null — needs DBNull.Value
+    // explicitly, unlike Dapper's parameter objects which handled this
+    // automatically.
+    private static object Db(object? v) => v ?? DBNull.Value;
 
     public async Task<(bool Ok, string Message)> TestConnectionAsync(string connString)
     {
@@ -88,116 +94,242 @@ public class SqlDataService
             new { CompanyId = companyId, SyncType = syncType, IsSuccess = success, Message = message, SyncedAt = DateTime.Now });
     }
 
+    // ── Manually-created party push (web app Party Master approval) ────────
+    //
+    // The web app's Admin > Pending Parties screen only ever flips
+    // ApprovalStatus locally — it has no direct route to the client's Tally
+    // instance (TallySync:Mode=Agent), so it never pushes to Tally itself.
+    // This Agent is the only thing that talks to Tally, so it's responsible
+    // for finding every Approved + manually-created ledger that hasn't been
+    // pushed yet (TallyPushedAt IS NULL) and creating it as a real Tally
+    // ledger master. 1 = Approved, matching LedgerApprovalStatus in the web app.
+    public async Task<List<Ledger>> GetApprovedUnpushedManualPartiesAsync(string connString, int companyId)
+    {
+        using var conn = new SqlConnection(connString);
+        await conn.OpenAsync();
+        var rows = await conn.QueryAsync<Ledger>(
+            "SELECT LedgerId, LedgerName, Parent, Address, State, PinCode, MobileNo, Email, LedgerFax, " +
+            "GSTNo, TaxType, IncomeTaxNo, VATTINNo, FSSAINo, CreditLimit, CreditPeriod, OpeningBalance, " +
+            "ClosingBalance, GUID, AlterId, CompanyId, LastSyncedAt, IsManuallyCreated, ApprovalStatus, TallyPushedAt " +
+            "FROM Ledgers WHERE CompanyId = @CompanyId AND IsManuallyCreated = 1 AND ApprovalStatus = 1 AND TallyPushedAt IS NULL",
+            new { CompanyId = companyId });
+        return rows.ToList();
+    }
+
+    public async Task MarkLedgerPushedToTallyAsync(string connString, int ledgerId)
+    {
+        using var conn = new SqlConnection(connString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync(
+            "UPDATE Ledgers SET TallyPushedAt = @Now WHERE LedgerId = @LedgerId",
+            new { Now = DateTime.Now, LedgerId = ledgerId });
+    }
+
     // ── Master sync upserts ─────────────────────────────────────────────────
 
+    // Bulk upsert: SqlBulkCopy the whole batch into a temp staging table (one
+    // round trip) then a single MERGE applies every insert/update at once.
+    // This replaced one INSERT/UPDATE statement PER ROW, executed
+    // sequentially — fine on a local SQL Server, but over any real network
+    // latency to a remote one, thousands of individual round trips is what
+    // was making this step take a full minute-plus even when nothing had
+    // actually changed (observed: 2156 stock items, 0 changes, 60s).
     public async Task<(int Added, int Updated)> UpsertLedgersAsync(string connString, int companyId, List<Ledger> incoming)
     {
         using var conn = new SqlConnection(connString);
         await conn.OpenAsync();
-        var existing = (await conn.QueryAsync<(int LedgerId, string LedgerName)>(
-                "SELECT LedgerId, LedgerName FROM Ledgers WHERE CompanyId = @CompanyId", new { CompanyId = companyId }))
-            .GroupBy(l => Normalize(l.LedgerName), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Last().LedgerId, StringComparer.OrdinalIgnoreCase);
+        var existingNames = (await conn.QueryAsync<string>(
+                "SELECT LedgerName FROM Ledgers WHERE CompanyId = @CompanyId", new { CompanyId = companyId }))
+            .Select(Normalize)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         // Collapse same-name entries within this batch to the last one before
         // upserting — without this, a name appearing twice in Tally's export
         // both miss the (unchanged) `existing` lookup on their first pass,
         // so the second occurrence inserts a duplicate row instead of
-        // updating the one the first occurrence just created. That orphaned
-        // duplicate then never gets touched again (existing.Last() picks
-        // only one of the two rows on every future sync).
+        // updating the one the first occurrence just created.
         var dedup = incoming
             .Where(x => !string.IsNullOrWhiteSpace(x.LedgerName))
             .GroupBy(x => Normalize(x.LedgerName), StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.Last());
+            .Select(g => g.Last())
+            .ToList();
 
-        int added = 0, updated = 0;
-        using var tx = conn.BeginTransaction();
+        if (dedup.Count == 0) return (0, 0);
+
+        int updated = dedup.Count(l => existingNames.Contains(Normalize(l.LedgerName)));
+        int added = dedup.Count - updated;
+
+        var table = new DataTable();
+        table.Columns.Add("LedgerName", typeof(string));
+        table.Columns.Add("Parent", typeof(string));
+        table.Columns.Add("Address", typeof(string));
+        table.Columns.Add("State", typeof(string));
+        table.Columns.Add("PinCode", typeof(string));
+        table.Columns.Add("MobileNo", typeof(string));
+        table.Columns.Add("Email", typeof(string));
+        table.Columns.Add("LedgerFax", typeof(string));
+        table.Columns.Add("GSTNo", typeof(string));
+        table.Columns.Add("TaxType", typeof(string));
+        table.Columns.Add("IncomeTaxNo", typeof(string));
+        table.Columns.Add("VATTINNo", typeof(string));
+        table.Columns.Add("CreditLimit", typeof(decimal));
+        table.Columns.Add("CreditPeriod", typeof(string));
+        table.Columns.Add("OpeningBalance", typeof(decimal));
+        table.Columns.Add("ClosingBalance", typeof(decimal));
+        table.Columns.Add("GUID", typeof(string));
+        table.Columns.Add("AlterId", typeof(long));
+        table.Columns.Add("LastSyncedAt", typeof(DateTime));
+
         foreach (var l in dedup)
         {
-            var name = Normalize(l.LedgerName);
-            if (existing.TryGetValue(name, out var id))
-            {
-                await conn.ExecuteAsync(@"
-                    UPDATE Ledgers SET Parent=@Parent, Address=@Address, State=@State, PinCode=@PinCode, MobileNo=@MobileNo,
-                        Email=@Email, LedgerFax=@LedgerFax, GSTNo=@GSTNo, TaxType=@TaxType,
-                        IncomeTaxNo=@IncomeTaxNo, VATTINNo=@VATTINNo, CreditLimit=@CreditLimit, CreditPeriod=@CreditPeriod,
-                        OpeningBalance=@OpeningBalance, ClosingBalance=@ClosingBalance,
-                        GUID=@GUID, AlterId=@AlterId, LastSyncedAt=@LastSyncedAt
-                    WHERE LedgerId=@LedgerId",
-                    new { l.Parent, l.Address, l.State, l.PinCode, l.MobileNo, l.Email, l.LedgerFax, l.GSTNo, l.TaxType,
-                          l.IncomeTaxNo, l.VATTINNo, l.CreditLimit, l.CreditPeriod, l.OpeningBalance, l.ClosingBalance,
-                          l.GUID, l.AlterId, l.LastSyncedAt, LedgerId = id }, tx);
-                updated++;
-            }
-            else
-            {
-                await conn.ExecuteAsync(@"
-                    INSERT INTO Ledgers (LedgerName, Parent, Address, State, PinCode, MobileNo, Email, LedgerFax,
-                        GSTNo, TaxType, IncomeTaxNo, VATTINNo, CreditLimit, CreditPeriod, OpeningBalance, ClosingBalance,
-                        GUID, AlterId, CompanyId, LastSyncedAt)
-                    VALUES (@LedgerName, @Parent, @Address, @State, @PinCode, @MobileNo, @Email, @LedgerFax,
-                        @GSTNo, @TaxType, @IncomeTaxNo, @VATTINNo, @CreditLimit, @CreditPeriod, @OpeningBalance, @ClosingBalance,
-                        @GUID, @AlterId, @CompanyId, @LastSyncedAt)",
-                    new { LedgerName = name, l.Parent, l.Address, l.State, l.PinCode, l.MobileNo, l.Email, l.LedgerFax,
-                          l.GSTNo, l.TaxType, l.IncomeTaxNo, l.VATTINNo, l.CreditLimit, l.CreditPeriod, l.OpeningBalance, l.ClosingBalance,
-                          l.GUID, l.AlterId, CompanyId = companyId, l.LastSyncedAt }, tx);
-                added++;
-            }
+            table.Rows.Add(
+                Normalize(l.LedgerName), Db(l.Parent), Db(l.Address), Db(l.State), Db(l.PinCode), Db(l.MobileNo),
+                Db(l.Email), Db(l.LedgerFax), Db(l.GSTNo), Db(l.TaxType), Db(l.IncomeTaxNo), Db(l.VATTINNo),
+                l.CreditLimit, Db(l.CreditPeriod), l.OpeningBalance, l.ClosingBalance, Db(l.GUID), l.AlterId, l.LastSyncedAt);
         }
+
+        using var tx = conn.BeginTransaction();
+
+        // Column sizes/precision here match the real Ledgers table exactly
+        // (Migrations/AppDbContextModelSnapshot.cs) — LedgerName nvarchar(450)
+        // to match its unique (CompanyId, LedgerName) index, everything else
+        // nvarchar(max)/decimal(18,2) as EF Core defines them.
+        await conn.ExecuteAsync(@"
+            CREATE TABLE #LedgersStaging (
+                LedgerName nvarchar(450), Parent nvarchar(max), Address nvarchar(max), State nvarchar(max),
+                PinCode nvarchar(max), MobileNo nvarchar(max), Email nvarchar(max), LedgerFax nvarchar(max),
+                GSTNo nvarchar(max), TaxType nvarchar(max), IncomeTaxNo nvarchar(max), VATTINNo nvarchar(max),
+                CreditLimit decimal(18,2), CreditPeriod nvarchar(max), OpeningBalance decimal(18,2), ClosingBalance decimal(18,2),
+                GUID nvarchar(max), AlterId bigint, LastSyncedAt datetime2)", transaction: tx);
+
+        using (var bulk = new SqlBulkCopy(conn, SqlBulkCopyOptions.Default, tx) { DestinationTableName = "#LedgersStaging" })
+        {
+            foreach (DataColumn col in table.Columns)
+                bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+            await bulk.WriteToServerAsync(table);
+        }
+
+        // Default SQL Server collation is case-insensitive (CI) — matches the
+        // OrdinalIgnoreCase name matching used everywhere else in this file.
+        await conn.ExecuteAsync(@"
+            MERGE INTO Ledgers AS target
+            USING #LedgersStaging AS source
+            ON target.CompanyId = @CompanyId AND target.LedgerName = source.LedgerName
+            WHEN MATCHED THEN UPDATE SET
+                Parent=source.Parent, Address=source.Address, State=source.State, PinCode=source.PinCode,
+                MobileNo=source.MobileNo, Email=source.Email, LedgerFax=source.LedgerFax, GSTNo=source.GSTNo,
+                TaxType=source.TaxType, IncomeTaxNo=source.IncomeTaxNo, VATTINNo=source.VATTINNo,
+                CreditLimit=source.CreditLimit, CreditPeriod=source.CreditPeriod,
+                OpeningBalance=source.OpeningBalance, ClosingBalance=source.ClosingBalance,
+                GUID=source.GUID, AlterId=source.AlterId, LastSyncedAt=source.LastSyncedAt
+            WHEN NOT MATCHED THEN INSERT
+                (LedgerName, Parent, Address, State, PinCode, MobileNo, Email, LedgerFax, GSTNo, TaxType,
+                 IncomeTaxNo, VATTINNo, CreditLimit, CreditPeriod, OpeningBalance, ClosingBalance, GUID, AlterId, CompanyId, LastSyncedAt)
+            VALUES
+                (source.LedgerName, source.Parent, source.Address, source.State, source.PinCode, source.MobileNo,
+                 source.Email, source.LedgerFax, source.GSTNo, source.TaxType, source.IncomeTaxNo, source.VATTINNo,
+                 source.CreditLimit, source.CreditPeriod, source.OpeningBalance, source.ClosingBalance, source.GUID, source.AlterId, @CompanyId, source.LastSyncedAt);
+            DROP TABLE #LedgersStaging;",
+            new { CompanyId = companyId }, tx);
+
         tx.Commit();
         return (added, updated);
     }
 
+    // See UpsertLedgersAsync's header comment for why this is bulk-loaded via
+    // a temp staging table + MERGE instead of one statement per row.
     public async Task<(int Added, int Updated)> UpsertStockItemsAsync(string connString, int companyId, List<StockItem> incoming)
     {
         using var conn = new SqlConnection(connString);
         await conn.OpenAsync();
-        var existing = (await conn.QueryAsync<(int StockItemId, string ItemName)>(
-                "SELECT StockItemId, ItemName FROM StockItems WHERE CompanyId = @CompanyId", new { CompanyId = companyId }))
-            .GroupBy(s => Normalize(s.ItemName), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Last().StockItemId, StringComparer.OrdinalIgnoreCase);
+        var existingNames = (await conn.QueryAsync<string>(
+                "SELECT ItemName FROM StockItems WHERE CompanyId = @CompanyId", new { CompanyId = companyId }))
+            .Select(Normalize)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         // See UpsertLedgersAsync for why same-batch names must be collapsed
         // before upserting.
         var dedup = incoming
             .Where(x => !string.IsNullOrWhiteSpace(x.ItemName))
             .GroupBy(x => Normalize(x.ItemName), StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.Last());
+            .Select(g => g.Last())
+            .ToList();
 
-        int added = 0, updated = 0;
-        using var tx = conn.BeginTransaction();
+        if (dedup.Count == 0) return (0, 0);
+
+        int updated = dedup.Count(s => existingNames.Contains(Normalize(s.ItemName)));
+        int added = dedup.Count - updated;
+
+        var table = new DataTable();
+        table.Columns.Add("ItemName", typeof(string));
+        table.Columns.Add("Parent", typeof(string));
+        table.Columns.Add("UOM", typeof(string));
+        table.Columns.Add("AdditionalUnits", typeof(string));
+        table.Columns.Add("RateOfDuty", typeof(decimal));
+        table.Columns.Add("OpeningBalance", typeof(decimal));
+        table.Columns.Add("ClosingBalance", typeof(decimal));
+        table.Columns.Add("OpeningValue", typeof(decimal));
+        table.Columns.Add("ClosingValue", typeof(decimal));
+        table.Columns.Add("IsBatchwiseOn", typeof(bool));
+        table.Columns.Add("IsCostTrackingOn", typeof(bool));
+        table.Columns.Add("GUID", typeof(string));
+        table.Columns.Add("AlterId", typeof(long));
+        table.Columns.Add("LastSyncedAt", typeof(DateTime));
+
         foreach (var s in dedup)
         {
-            var name = Normalize(s.ItemName);
-            if (existing.TryGetValue(name, out var id))
-            {
-                await conn.ExecuteAsync(@"
-                    UPDATE StockItems SET Parent=@Parent, UOM=@UOM, AdditionalUnits=@AdditionalUnits,
-                        RateOfDuty=@RateOfDuty, OpeningBalance=@OpeningBalance, ClosingBalance=@ClosingBalance,
-                        OpeningValue=@OpeningValue, ClosingValue=@ClosingValue, IsBatchwiseOn=@IsBatchwiseOn,
-                        IsCostTrackingOn=@IsCostTrackingOn, GUID=@GUID, AlterId=@AlterId, LastSyncedAt=@LastSyncedAt
-                    WHERE StockItemId=@StockItemId",
-                    new { s.Parent, s.UOM, s.AdditionalUnits, s.RateOfDuty, s.OpeningBalance, s.ClosingBalance,
-                          s.OpeningValue, s.ClosingValue, s.IsBatchwiseOn, s.IsCostTrackingOn,
-                          s.GUID, s.AlterId, s.LastSyncedAt, StockItemId = id }, tx);
-                updated++;
-            }
-            else
-            {
-                await conn.ExecuteAsync(@"
-                    INSERT INTO StockItems (ItemName, Parent, UOM, AdditionalUnits, Rate, RateOfDuty,
-                        OpeningBalance, ClosingBalance, OpeningValue, ClosingValue, IsBatchwiseOn, IsCostTrackingOn,
-                        GUID, AlterId, CompanyId, LastSyncedAt)
-                    VALUES (@ItemName, @Parent, @UOM, @AdditionalUnits, 0, @RateOfDuty,
-                        @OpeningBalance, @ClosingBalance, @OpeningValue, @ClosingValue, @IsBatchwiseOn, @IsCostTrackingOn,
-                        @GUID, @AlterId, @CompanyId, @LastSyncedAt)",
-                    new { ItemName = name, s.Parent, s.UOM, s.AdditionalUnits, s.RateOfDuty,
-                          s.OpeningBalance, s.ClosingBalance, s.OpeningValue, s.ClosingValue, s.IsBatchwiseOn, s.IsCostTrackingOn,
-                          s.GUID, s.AlterId, CompanyId = companyId, s.LastSyncedAt }, tx);
-                added++;
-            }
+            table.Rows.Add(
+                Normalize(s.ItemName), Db(s.Parent), Db(s.UOM), Db(s.AdditionalUnits), s.RateOfDuty,
+                s.OpeningBalance, s.ClosingBalance, s.OpeningValue, s.ClosingValue, s.IsBatchwiseOn, s.IsCostTrackingOn,
+                Db(s.GUID), s.AlterId, s.LastSyncedAt);
         }
+
+        using var tx = conn.BeginTransaction();
+
+        // Column sizes/precision here match the real StockItems table exactly
+        // (Migrations/AppDbContextModelSnapshot.cs) — ItemName nvarchar(450)
+        // to match its unique (CompanyId, ItemName) index, RateOfDuty
+        // decimal(18,2) (not (9,3) — that's SaleOrderItem's tax-rate
+        // precision, a different table), everything else matching EF Core's
+        // own defaults.
+        await conn.ExecuteAsync(@"
+            CREATE TABLE #StockItemsStaging (
+                ItemName nvarchar(450), Parent nvarchar(max), UOM nvarchar(max), AdditionalUnits nvarchar(max),
+                RateOfDuty decimal(18,2), OpeningBalance decimal(18,3), ClosingBalance decimal(18,3),
+                OpeningValue decimal(18,2), ClosingValue decimal(18,2), IsBatchwiseOn bit, IsCostTrackingOn bit,
+                GUID nvarchar(max), AlterId bigint, LastSyncedAt datetime2)", transaction: tx);
+
+        using (var bulk = new SqlBulkCopy(conn, SqlBulkCopyOptions.Default, tx) { DestinationTableName = "#StockItemsStaging" })
+        {
+            foreach (DataColumn col in table.Columns)
+                bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+            await bulk.WriteToServerAsync(table);
+        }
+
+        // Rate is deliberately untouched on both branches here — it's not in
+        // the staging table at all — matching the original code exactly:
+        // UPDATE never touched Rate, and INSERT always hardcoded 0 for it.
+        // (Comment preserved from the row-by-row version; wherever Rate
+        // actually gets its real value is a separate code path.)
+        await conn.ExecuteAsync(@"
+            MERGE INTO StockItems AS target
+            USING #StockItemsStaging AS source
+            ON target.CompanyId = @CompanyId AND target.ItemName = source.ItemName
+            WHEN MATCHED THEN UPDATE SET
+                Parent=source.Parent, UOM=source.UOM, AdditionalUnits=source.AdditionalUnits,
+                RateOfDuty=source.RateOfDuty, OpeningBalance=source.OpeningBalance, ClosingBalance=source.ClosingBalance,
+                OpeningValue=source.OpeningValue, ClosingValue=source.ClosingValue, IsBatchwiseOn=source.IsBatchwiseOn,
+                IsCostTrackingOn=source.IsCostTrackingOn, GUID=source.GUID, AlterId=source.AlterId, LastSyncedAt=source.LastSyncedAt
+            WHEN NOT MATCHED THEN INSERT
+                (ItemName, Parent, UOM, AdditionalUnits, Rate, RateOfDuty, OpeningBalance, ClosingBalance,
+                 OpeningValue, ClosingValue, IsBatchwiseOn, IsCostTrackingOn, GUID, AlterId, CompanyId, LastSyncedAt)
+            VALUES
+                (source.ItemName, source.Parent, source.UOM, source.AdditionalUnits, 0, source.RateOfDuty,
+                 source.OpeningBalance, source.ClosingBalance, source.OpeningValue, source.ClosingValue,
+                 source.IsBatchwiseOn, source.IsCostTrackingOn, source.GUID, source.AlterId, @CompanyId, source.LastSyncedAt);
+            DROP TABLE #StockItemsStaging;",
+            new { CompanyId = companyId }, tx);
+
         tx.Commit();
         return (added, updated);
     }
@@ -254,49 +386,82 @@ public class SqlDataService
         tx.Commit();
     }
 
+    // See UpsertLedgersAsync's header comment for why this is bulk-loaded via
+    // a temp staging table + MERGE instead of one statement per row.
     public async Task<(int Added, int Updated)> UpsertGodownsAsync(string connString, int companyId, List<Godown> incoming)
     {
         using var conn = new SqlConnection(connString);
         await conn.OpenAsync();
-        var existing = (await conn.QueryAsync<(int GodownId, string GodownName)>(
-                "SELECT GodownId, GodownName FROM Godowns WHERE CompanyId = @CompanyId", new { CompanyId = companyId }))
-            .GroupBy(g => Normalize(g.GodownName), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Last().GodownId, StringComparer.OrdinalIgnoreCase);
+        var existingNames = (await conn.QueryAsync<string>(
+                "SELECT GodownName FROM Godowns WHERE CompanyId = @CompanyId", new { CompanyId = companyId }))
+            .Select(Normalize)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         // See UpsertLedgersAsync for why same-batch names must be collapsed
         // before upserting.
         var dedup = incoming
             .Where(x => !string.IsNullOrWhiteSpace(x.GodownName))
             .GroupBy(x => Normalize(x.GodownName), StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.Last());
+            .Select(g => g.Last())
+            .ToList();
 
-        int added = 0, updated = 0;
-        using var tx = conn.BeginTransaction();
+        if (dedup.Count == 0) return (0, 0);
+
+        int updated = dedup.Count(g => existingNames.Contains(Normalize(g.GodownName)));
+        int added = dedup.Count - updated;
+
+        var table = new DataTable();
+        table.Columns.Add("GodownName", typeof(string));
+        table.Columns.Add("Parent", typeof(string));
+        table.Columns.Add("Address", typeof(string));
+        table.Columns.Add("City", typeof(string));
+        table.Columns.Add("State", typeof(string));
+        table.Columns.Add("PinCode", typeof(string));
+        table.Columns.Add("IsBatchwiseOn", typeof(bool));
+        table.Columns.Add("GUID", typeof(string));
+        table.Columns.Add("AlterId", typeof(long));
+        table.Columns.Add("LastSyncedAt", typeof(DateTime));
+
         foreach (var g in dedup)
         {
-            var name = Normalize(g.GodownName);
-            if (existing.TryGetValue(name, out var id))
-            {
-                await conn.ExecuteAsync(@"
-                    UPDATE Godowns SET Parent=@Parent, Address=@Address, City=@City, State=@State,
-                        PinCode=@PinCode, IsBatchwiseOn=@IsBatchwiseOn, GUID=@GUID, AlterId=@AlterId, LastSyncedAt=@LastSyncedAt
-                    WHERE GodownId=@GodownId",
-                    new { g.Parent, g.Address, g.City, g.State, g.PinCode, g.IsBatchwiseOn,
-                          g.GUID, g.AlterId, g.LastSyncedAt, GodownId = id }, tx);
-                updated++;
-            }
-            else
-            {
-                await conn.ExecuteAsync(@"
-                    INSERT INTO Godowns (GodownName, Parent, Address, City, State, PinCode, IsBatchwiseOn,
-                        GUID, AlterId, CompanyId, LastSyncedAt)
-                    VALUES (@GodownName, @Parent, @Address, @City, @State, @PinCode, @IsBatchwiseOn,
-                        @GUID, @AlterId, @CompanyId, @LastSyncedAt)",
-                    new { GodownName = name, g.Parent, g.Address, g.City, g.State, g.PinCode, g.IsBatchwiseOn,
-                          g.GUID, g.AlterId, CompanyId = companyId, g.LastSyncedAt }, tx);
-                added++;
-            }
+            table.Rows.Add(
+                Normalize(g.GodownName), Db(g.Parent), Db(g.Address), Db(g.City), Db(g.State), Db(g.PinCode),
+                g.IsBatchwiseOn, Db(g.GUID), g.AlterId, g.LastSyncedAt);
         }
+
+        using var tx = conn.BeginTransaction();
+
+        // Matches the real Godowns table exactly (Migrations/AppDbContextModelSnapshot.cs)
+        // — nvarchar(max) throughout, no unique-index size constraint on GodownName.
+        await conn.ExecuteAsync(@"
+            CREATE TABLE #GodownsStaging (
+                GodownName nvarchar(max), Parent nvarchar(max), Address nvarchar(max), City nvarchar(max),
+                State nvarchar(max), PinCode nvarchar(max), IsBatchwiseOn bit, GUID nvarchar(max),
+                AlterId bigint, LastSyncedAt datetime2)", transaction: tx);
+
+        using (var bulk = new SqlBulkCopy(conn, SqlBulkCopyOptions.Default, tx) { DestinationTableName = "#GodownsStaging" })
+        {
+            foreach (DataColumn col in table.Columns)
+                bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+            await bulk.WriteToServerAsync(table);
+        }
+
+        await conn.ExecuteAsync(@"
+            MERGE INTO Godowns AS target
+            USING #GodownsStaging AS source
+            ON target.CompanyId = @CompanyId AND target.GodownName = source.GodownName
+            WHEN MATCHED THEN UPDATE SET
+                Parent=source.Parent, Address=source.Address, City=source.City, State=source.State,
+                PinCode=source.PinCode, IsBatchwiseOn=source.IsBatchwiseOn, GUID=source.GUID,
+                AlterId=source.AlterId, LastSyncedAt=source.LastSyncedAt
+            WHEN NOT MATCHED THEN INSERT
+                (GodownName, Parent, Address, City, State, PinCode, IsBatchwiseOn, GUID, AlterId, CompanyId, LastSyncedAt)
+            VALUES
+                (source.GodownName, source.Parent, source.Address, source.City, source.State, source.PinCode,
+                 source.IsBatchwiseOn, source.GUID, source.AlterId, @CompanyId, source.LastSyncedAt);
+            DROP TABLE #GodownsStaging;",
+            new { CompanyId = companyId }, tx);
+
         tx.Commit();
         return (added, updated);
     }

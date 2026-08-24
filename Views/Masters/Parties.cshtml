@@ -50,17 +50,22 @@
                     <input type="text" id="npName" class="form-control form-control-sm" placeholder="e.g. Aajo the Discount Shop" />
                 </div>
                 <div class="mb-2">
+                    <label class="form-label small fw-semibold">Outlet Name <span class="text-muted fw-normal">(optional)</span></label>
+                    <input type="text" id="npOutlet" class="form-control form-control-sm" placeholder="If applicable" />
+                </div>
+                <div class="mb-2">
                     <label class="form-label small fw-semibold">GST Number</label>
                     <input type="text" id="npGst" class="form-control form-control-sm" placeholder="e.g. 27AKJPC3922G1ZE" />
                 </div>
                 <div class="mb-2">
                     <label class="form-label small fw-semibold">Food License No. (FSSAI) <span class="text-danger">*</span></label>
-                    <input type="text" id="npFssai" class="form-control form-control-sm" placeholder="Required" required />
+                    <input type="text" id="npFssai" class="form-control form-control-sm" placeholder="14-digit number" required
+                           inputmode="numeric" pattern="[0-9]*" maxlength="14" />
                 </div>
                 <div class="mb-2">
                     <label class="form-label small fw-semibold">Food License Document (PDF)</label>
-                    <input type="file" id="npFssaiDoc" class="form-control form-control-sm" accept="application/pdf" />
-                    <div class="text-muted" style="font-size:11px">Optional — PDF only, max 5 MB</div>
+                    <input type="file" id="npFssaiDoc" class="form-control form-control-sm" accept="application/pdf,image/jpeg,image/png,image/webp" />
+                    <div class="text-muted" style="font-size:11px">Optional — PDF or photo (JPG, PNG, WEBP), max 5 MB</div>
                 </div>
                 <div class="mb-2">
                     <label class="form-label small fw-semibold">Address</label>
@@ -94,6 +99,22 @@
                 <div class="mb-2">
                     <label class="form-label small fw-semibold">Contact Number <span class="text-danger">*</span></label>
                     <input type="text" id="npContact" class="form-control form-control-sm" placeholder="Required" required />
+                </div>
+                <div class="mb-2">
+                    <label class="form-label small fw-semibold d-block">Payment Terms</label>
+                    <div class="d-flex gap-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="npPaymentTerms" id="npTermsCod" value="COD" checked onchange="toggleCreditDays()" />
+                            <label class="form-check-label small" for="npTermsCod">Cash on Delivery</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="npPaymentTerms" id="npTermsCredit" value="Credit" onchange="toggleCreditDays()" />
+                            <label class="form-check-label small" for="npTermsCredit">Credit</label>
+                        </div>
+                    </div>
+                    <div id="npCreditDaysWrap" class="mt-2" style="display:none">
+                        <input type="number" id="npCreditDays" class="form-control form-control-sm" placeholder="No. of credit days" min="1" step="1" style="max-width:180px" />
+                    </div>
                 </div>
                 <div class="text-muted" style="font-size:11px">Submitted for Admin approval — the party won't be usable in Sale Orders or pushed to Tally until approved.</div>
             </div>
@@ -193,6 +214,12 @@ function clearSearch() {
 
 function escHtml(s) { return $('<div>').text(s || '').html(); }
 
+function toggleCreditDays() {
+    var isCredit = $('#npTermsCredit').is(':checked');
+    $('#npCreditDaysWrap').toggle(isCredit);
+    if (!isCredit) $('#npCreditDays').val('');
+}
+
 function saveNewParty() {
     var name = $('#npName').val().trim();
     if (!name) {
@@ -200,9 +227,20 @@ function saveNewParty() {
         return;
     }
 
+    var paymentTerms = $('input[name=npPaymentTerms]:checked').val();
+    var creditDays = $('#npCreditDays').val().trim();
+    if (paymentTerms === 'Credit' && (!creditDays || parseInt(creditDays, 10) <= 0)) {
+        showToast('danger', 'Enter the number of credit days.', 'Validation Error');
+        return;
+    }
+
     var fssaiNo = $('#npFssai').val().trim();
     if (!fssaiNo) {
         showToast('danger', 'Food License No. (FSSAI) is required.', 'Validation Error');
+        return;
+    }
+    if (!/^[0-9]{14}$/.test(fssaiNo)) {
+        showToast('danger', 'Food License No. (FSSAI) must be exactly 14 digits.', 'Validation Error');
         return;
     }
 
@@ -214,9 +252,10 @@ function saveNewParty() {
 
     var fileInput = document.getElementById('npFssaiDoc');
     var file = fileInput.files.length ? fileInput.files[0] : null;
+    var allowedFssaiTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
     if (file) {
-        if (file.type !== 'application/pdf') {
-            showToast('danger', 'Food License document must be a PDF file.', 'Validation Error');
+        if (allowedFssaiTypes.indexOf(file.type) === -1) {
+            showToast('danger', 'Food License document must be a PDF or an image (JPG, PNG, WEBP).', 'Validation Error');
             return;
         }
         if (file.size > 5 * 1024 * 1024) {
@@ -231,11 +270,14 @@ function saveNewParty() {
 
     var fd = new FormData();
     fd.append('partyName', name);
+    fd.append('outletName', $('#npOutlet').val().trim());
     fd.append('gstNo', $('#npGst').val().trim());
     fd.append('fssaiNo', fssaiNo);
     fd.append('address', $('#npAddress').val().trim());
     fd.append('state', $('#npState').val());
     fd.append('contactNo', contactNo);
+    fd.append('paymentTerms', paymentTerms);
+    if (paymentTerms === 'Credit') fd.append('creditDays', creditDays);
     fd.append('__RequestVerificationToken', $('#newPartyModal [name=__RequestVerificationToken]').val());
     if (file) fd.append('fssaiDocument', file);
 
@@ -249,8 +291,10 @@ function saveNewParty() {
         showToast(r.success ? 'success' : 'danger', r.message, r.success ? 'Submitted' : 'Error');
         if (r.success) {
             bootstrap.Modal.getInstance(document.getElementById('newPartyModal')).hide();
-            $('#npName, #npGst, #npFssai, #npAddress, #npContact').val('');
+            $('#npName, #npOutlet, #npGst, #npFssai, #npAddress, #npContact, #npCreditDays').val('');
             $('#npState').val('');
+            $('#npTermsCod').prop('checked', true);
+            $('#npCreditDaysWrap').hide();
             fileInput.value = '';
             if ($('#searchInput').val().trim()) doSearch($('#searchInput').val().trim());
         }

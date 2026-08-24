@@ -462,7 +462,6 @@ public class SyncController : Controller
         var salesLedger    = Setting("SalesLedger",        "Sales");
         var roundOffLedger = Setting("TaxLedgerRoundOff",  "Round Off");
         var voucherType    = Setting("DefaultVoucherType", "Sales Order");
-        var batchName      = Setting("DefaultBatchName",   "Primary Batch");
 
         var pendingOrders = await _db.SaleOrders
             .Include(o => o.Items)
@@ -481,7 +480,7 @@ public class SyncController : Controller
             var (success, message) = await _tally.PushSaleOrderAsync(
                 tallyUrl, order, companyName,
                 salesLedger, igstLedger, cgstLedger, sgstLedger,
-                roundOffLedger, isAlter, voucherType, batchName);
+                roundOffLedger, isAlter, voucherType);
 
             order.Status = success ? OrderStatus.Synced : OrderStatus.Error;
             order.SyncedAt = DateTime.Now;
@@ -533,7 +532,8 @@ public class SyncController : Controller
             var tallyUrl = $"http://{company.TallyIp}:{company.TallyPort}";
             var fromDate = groups[g].Min(o => o.OrderDate);
 
-            var invoices = await _tally.GetRecentSalesInvoicesAsync(tallyUrl, company.TallyCompanyName, fromDate);
+            var salesTypes = await _tally.GetSalesVoucherTypeNamesAsync(tallyUrl, company.TallyCompanyName);
+            var invoices = await _tally.GetRecentSalesInvoicesAsync(tallyUrl, company.TallyCompanyName, fromDate, salesTypes);
 
             foreach (var order in groups[g])
             {

@@ -70,15 +70,14 @@ public class SettingsController : Controller
         ViewBag.SalesLedger       = allSettings.FirstOrDefault(s => s.Key == "SalesLedger")?.Value ?? "Sales";
         ViewBag.TaxLedgerRoundOff = allSettings.FirstOrDefault(s => s.Key == "TaxLedgerRoundOff")?.Value ?? "Round Off";
 
-        // Order defaults (voucher type + godown/batch auto-applied when punching a Sale Order)
+        // Order defaults (voucher type; Godown/Batch used to be admin-editable
+        // here too, but a stale or mistyped value silently attached wrong
+        // Godown/Batch data to every pushed order — a fixed "Primary Batch"
+        // (Tally's own real, pre-existing default batch) is used instead
+        // now, unconditionally, so there's nothing left to configure or get
+        // wrong. See TallyService.PushSaleOrderAsync.)
         ViewBag.DefaultVoucherType = allSettings.FirstOrDefault(s => s.Key == "DefaultVoucherType")?.Value ?? "Sales Order";
-        ViewBag.DefaultGodownName  = allSettings.FirstOrDefault(s => s.Key == "DefaultGodownName")?.Value ?? "";
-        ViewBag.DefaultBatchName   = allSettings.FirstOrDefault(s => s.Key == "DefaultBatchName")?.Value ?? "Primary Batch";
         ViewBag.TallyFssaiUdfField = allSettings.FirstOrDefault(s => s.Key == "TallyFssaiUdfField")?.Value ?? "";
-        ViewBag.Godowns = await _db.Godowns
-            .Where(g => g.CompanyId == selectedCompanyId)
-            .OrderBy(g => g.GodownName)
-            .ToListAsync();
 
         // License status
         var licenseKey = await _license.GetLicenseKeyAsync();
@@ -187,13 +186,13 @@ public class SettingsController : Controller
     }
 
     [HttpPost, ValidateAntiForgeryToken]
-    public async Task<IActionResult> SaveOrderDefaults(string defaultVoucherType, string? defaultGodownName, string? defaultBatchName, string? tallyFssaiUdfField)
+    public async Task<IActionResult> SaveOrderDefaults(string defaultVoucherType, string? tallyFssaiUdfField)
     {
+        // DefaultGodownName/DefaultBatchName intentionally no longer read
+        // here — see the comment above ViewBag.DefaultVoucherType in Index().
         var keys = new Dictionary<string, string>
         {
             ["DefaultVoucherType"] = string.IsNullOrWhiteSpace(defaultVoucherType) ? "Sales Order" : defaultVoucherType.Trim(),
-            ["DefaultGodownName"]  = defaultGodownName?.Trim() ?? "",
-            ["DefaultBatchName"]   = string.IsNullOrWhiteSpace(defaultBatchName) ? "Primary Batch" : defaultBatchName.Trim(),
             ["TallyFssaiUdfField"] = tallyFssaiUdfField?.Trim() ?? "",
         };
         foreach (var (key, val) in keys)

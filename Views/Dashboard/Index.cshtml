@@ -64,6 +64,17 @@
             </div>
         </div>
         <div class="col-6 col-md-3">
+            <div class="card stat-card stat-indigo p-3">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <div class="stat-val" style="color:#3730a3" id="statInvoiced">@stats.Invoiced</div>
+                        <div class="stat-label">Invoiced in Tally</div>
+                    </div>
+                    <div class="stat-icon icon-indigo"><i class="bi bi-receipt"></i></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
             <div class="card stat-card stat-red p-3">
                 <div class="d-flex justify-content-between align-items-start">
                     <div>
@@ -110,7 +121,7 @@
             <div class="p-2" id="recentOrdersList">
                 @foreach (var o in recentOrders)
                 {
-                    string sc = o.Status.ToString() switch { "Pending" => "badge-pending", "Synced" => "badge-synced", "Error" => "badge-error", _ => "badge-draft" };
+                    string sc = o.Status.ToString() switch { "Pending" => "badge-pending", "Synced" => "badge-synced", "Error" => "badge-error", _ => "badge-cancelled" };
                     <a href="/SaleOrder/Details/@o.SaleOrderId" class="text-decoration-none">
                         <div class="order-card card px-3 py-2">
                             <div class="d-flex justify-content-between align-items-center">
@@ -146,8 +157,8 @@
                 <span id="errorAlertText">@errorCount order(s) failed to sync</span>
             </div>
             <div class="p-3">
-                <p class="small text-muted mb-2">These orders could not be pushed to Tally.</p>
-                <a href="/SaleOrder?status=Error" class="btn btn-sm btn-outline-danger w-100">View &amp; Resubmit</a>
+                <p class="small text-muted mb-2">These orders could not be pushed to Tally. Open one and hit Edit to fix and requeue it.</p>
+                <a href="/SaleOrder?status=Error" class="btn btn-sm btn-outline-danger w-100">View &amp; Fix</a>
             </div>
         </div>
     </div>
@@ -188,7 +199,7 @@ function renderRecentOrders(orders) {
             '<p class="mt-2 small">No orders yet. <a href="/SaleOrder/Create">Create first order</a></p></div>';
     }
     return orders.map(function(o) {
-        var sc = badgeClass[o.status] || 'badge-draft';
+        var sc = badgeClass[o.status] || 'badge-cancelled';
         return '<a href="/SaleOrder/Details/' + o.saleOrderId + '" class="text-decoration-none">' +
             '<div class="order-card card px-3 py-2">' +
             '<div class="d-flex justify-content-between align-items-center">' +
@@ -216,6 +227,7 @@ function refreshDashboard() {
         $('#statToday').text(s.todayCount);
         $('#statPending').text(s.pending);
         $('#statSynced').text(s.synced);
+        $('#statInvoiced').text(s.invoiced);
         $('#statError').text(s.error);
         $('#statMonthValue').text(fmtMoney(s.monthValue));
         $('#statTotal').text(s.total);

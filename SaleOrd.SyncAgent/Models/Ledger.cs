@@ -29,4 +29,11 @@ public class Ledger
 
     public int CompanyId { get; set; }
     public DateTime LastSyncedAt { get; set; }
+
+    // Set only by the web app's Masters > Parties "New Party" form — never by
+    // this Agent's Tally-fetch upserts. Used to find parties the Agent still
+    // owes a Tally push, without touching the bulk of Tally-synced ledgers.
+    public bool IsManuallyCreated { get; set; }
+    public int ApprovalStatus { get; set; } // 0=Pending, 1=Approved, 2=Rejected — mirrors web app's LedgerApprovalStatus
+    public DateTime? TallyPushedAt { get; set; }
 }

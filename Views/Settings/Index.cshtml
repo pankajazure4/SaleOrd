@@ -214,36 +214,18 @@
                 <form method="post" asp-action="SaveOrderDefaults">
                     @Html.AntiForgeryToken()
                     <div class="row g-2">
-                        <div class="col-6">
+                        <div class="col-12">
                             <label class="form-label small fw-semibold">Default Voucher Type</label>
                             <input type="text" name="defaultVoucherType" class="form-control form-control-sm"
                                    value="@ViewBag.DefaultVoucherType" placeholder="Sales Order" />
                             <div class="text-muted" style="font-size:11px">Voucher type used when pushing orders to Tally</div>
                         </div>
-                        <div class="col-6">
-                            <label class="form-label small fw-semibold">Default Godown</label>
-                            <select name="defaultGodownName" class="form-select form-select-sm">
-                                <option value="">None</option>
-                                @foreach (var g in (IEnumerable<SaleOrd.Models.Domain.Godown>)ViewBag.Godowns)
-                                {
-                                    if ((string)ViewBag.DefaultGodownName == g.GodownName)
-                                    {
-                                        <option value="@g.GodownName" selected>@g.GodownName</option>
-                                    }
-                                    else
-                                    {
-                                        <option value="@g.GodownName">@g.GodownName</option>
-                                    }
-                                }
-                            </select>
-                            <div class="text-muted" style="font-size:11px">Applied automatically to every item — no per-item Godown picker in the order form</div>
-                        </div>
-                        <div class="col-6">
-                            <label class="form-label small fw-semibold">Default Batch</label>
-                            <input type="text" name="defaultBatchName" class="form-control form-control-sm"
-                                   value="@ViewBag.DefaultBatchName" placeholder="Primary Batch" />
-                            <div class="text-muted" style="font-size:11px">Batch name used in the Tally push wherever batch allocation applies</div>
-                        </div>
+                        @* Default Godown/Batch removed — Tally is now always
+                           told "Primary Batch" (a real, pre-existing default
+                           batch Tally keeps for every item), and Godown is
+                           simply omitted. A wrong/stale value here used to
+                           silently attach bad batch/godown data to every
+                           single pushed order. *@
                         <div class="col-12">
                             <label class="form-label small fw-semibold">Tally FSSAI UDF Field</label>
                             <input type="text" name="tallyFssaiUdfField" class="form-control form-control-sm"

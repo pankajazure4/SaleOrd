@@ -27,7 +27,7 @@
             <thead>
                 <tr>
                     <th>Name</th>
-                    <th class="d-none d-md-table-cell">Email / Phone</th>
+                    <th>Email / Phone</th>
                     <th>Company / Organization</th>
                     <th>Status</th>
                     <th class="d-none d-md-table-cell">Requested</th>
@@ -46,9 +46,8 @@
                     <tr>
                         <td>
                             <div class="fw-semibold" style="font-size:13px">@r.FullName</div>
-                            <div class="d-md-none text-muted" style="font-size:11px">@r.Email</div>
                         </td>
-                        <td class="d-none d-md-table-cell text-muted small">
+                        <td class="text-muted small">
                             @r.Email
                             @if (!string.IsNullOrWhiteSpace(r.PhoneNumber))
                             {
@@ -119,12 +118,17 @@
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
-                        @if (!string.IsNullOrWhiteSpace(r.OrganizationName))
-                        {
-                            <div class="text-muted small mb-2">
-                                They said they belong to: <strong>@r.OrganizationName</strong>
-                            </div>
-                        }
+                        <div class="small mb-3 p-2 rounded-3" style="background:var(--bg)">
+                            <div class="d-flex justify-content-between"><span class="text-muted">Email</span><span>@r.Email</span></div>
+                            @if (!string.IsNullOrWhiteSpace(r.PhoneNumber))
+                            {
+                                <div class="d-flex justify-content-between"><span class="text-muted">Phone</span><span>@r.PhoneNumber</span></div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(r.OrganizationName))
+                            {
+                                <div class="d-flex justify-content-between"><span class="text-muted">Company / Organization</span><span>@r.OrganizationName</span></div>
+                            }
+                        </div>
                         <label class="form-label small fw-semibold">Role</label>
                         <select name="role" class="form-select mb-2">
                             @foreach (var role in (ViewBag.Roles as List<string> ?? new List<string> { "Salesman", "Manager", "Admin" }))

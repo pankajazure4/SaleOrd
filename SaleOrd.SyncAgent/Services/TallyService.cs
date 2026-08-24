@@ -557,8 +557,7 @@ public class TallyService
         string sgstLedger   = "SGST",
         string roundOffLedger = "Round Off",
         bool   isAlter      = false,
-        string voucherType  = "Sales Order",
-        string batchName    = "Primary Batch")
+        string voucherType  = "Sales Order")
     {
         var action     = isAlter ? "Alter" : "Create";
         var dateStr    = order.OrderDate.ToString("yyyyMMdd");
@@ -575,15 +574,42 @@ public class TallyService
             var rateStr = $"{item.Rate:F2}/{item.UOM}";
             var qtyStr  = $" {item.Qty:F3} {item.UOM}";
 
-            var batchXml = string.Empty;
-            if (!string.IsNullOrWhiteSpace(item.GodownName))
-            {
-                var jd = TallyJd(dueDate);
-                var p  = dueDate.ToString("d-MMM-yy");
-                batchXml = $@"
+            // ORDERNO/ORDERDUEDATE live inside BATCHALLOCATIONS.LIST in
+            // Tally's schema, but they're order-tracking fields a Sales
+            // Order voucher needs on every item regardless of whether that
+            // item actually has a godown/batch assigned — confirmed against
+            // a real Tally export: BATCHNAME is present even for a
+            // non-batch-tracked item. Previously this whole block (so
+            // ORDERNO and ORDERDUEDATE too) was skipped entirely whenever
+            // GodownName was empty, which is exactly what produced "Due
+            // date of order is missing in item allocations" on push — Tally
+            // requires ORDERDUEDATE per item allocation on this voucher
+            // type unconditionally. GODOWNNAME is the only piece that's
+            // genuinely conditional here. (Mirrored from the web app's
+            // TallyService — see there for the same fix.)
+            //
+            // BATCHNAME's real export value for "no batch picked" is the raw
+            // control character 0x04 followed by "Any" — Tally itself writes
+            // this as the character reference "&#4;" since 0x04 can't appear
+            // as a literal byte in XML text. That "&#4;" prefix IS the thing
+            // that marks it as Tally's reserved "Any" sentinel rather than a
+            // real batch name — plain "Any" with no prefix was tried first
+            // and Tally read it as a literal (nonexistent) batch name,
+            // auto-creating a new one on every single push (duplicate batch
+            // masters). "&#4; Any" below is written as a raw literal, NOT
+            // run through Escape() — Escape() would turn "&" into "&amp;"
+            // and the whole point (Tally's XML parser decoding "&#4;" back
+            // into the raw 0x04 byte) would be lost. (Mirrored from the web
+            // app's TallyService.)
+            var jd = TallyJd(dueDate);
+            var p  = dueDate.ToString("d-MMM-yy");
+            var godownXml = string.IsNullOrWhiteSpace(item.GodownName)
+                ? ""
+                : $"<GODOWNNAME>{Escape(item.GodownName)}</GODOWNNAME>";
+            var batchXml = $@"
               <BATCHALLOCATIONS.LIST>
-                <GODOWNNAME>{Escape(item.GodownName)}</GODOWNNAME>
-                <BATCHNAME>{Escape(batchName)}</BATCHNAME>
+                {godownXml}
+                <BATCHNAME>&#4; Any</BATCHNAME>
                 <ORDERNO>{Escape(order.OrderNo)}</ORDERNO>
                 <AMOUNT>{item.Amount:F2}</AMOUNT>
                 <ACTUALQTY>{qtyStr}</ACTUALQTY>
@@ -592,7 +618,6 @@ public class TallyService
                 <ADDITIONALDETAILS.LIST></ADDITIONALDETAILS.LIST>
                 <VOUCHERCOMPONENTLIST.LIST></VOUCHERCOMPONENTLIST.LIST>
               </BATCHALLOCATIONS.LIST>";
-            }
 
             itemsXml.Append($@"
             <ALLINVENTORYENTRIES.LIST>
@@ -822,8 +847,20 @@ public class TallyService
         public List<string> OrderRefs { get; set; } = new();
     }
 
-    // Fetches Sales vouchers in [fromDate, today] ONCE, so a whole batch of
-    // pending orders can be matched against a single Tally round-trip.
+    // Fetches Sales-type vouchers in [fromDate, today] ONCE, so a whole batch
+    // of pending orders can be matched against a single Tally round-trip.
+    //
+    // salesVoucherTypeNames must be the FULL list of voucher types that
+    // behave as a sale (Abbreviation="Sale") — see GetSalesVoucherTypeNamesAsync,
+    // the same discovery VoucherInventorySyncService already uses. This used
+    // to hardcode a single "$VoucherTypeName:\"Sales\"" filter, which only
+    // matches a voucher type literally named "Sales" — on this client's
+    // install there are several Sales-abbreviation types with other names
+    // (Sales-2, Sales 23-24 New Latest, Sales New 23-24 -Dont Use — see the
+    // "Sales voucher types matched" log line from master sync), so any
+    // invoice raised under one of those never matched here and its order's
+    // IsInvoiced flag silently never got set, even though the invoice
+    // genuinely existed in Tally.
     //
     // An earlier per-order version of this query had no date bound at all —
     // querying Tally's entire Sales voucher history, once for EVERY
@@ -843,8 +880,17 @@ public class TallyService
     // regardless of voucher-type class, so full type-hierarchy resolution
     // was unnecessary overhead here, not a requirement.
     public async Task<List<InvoiceLookupRecord>> GetRecentSalesInvoicesAsync(
-        string tallyUrl, string companyName, DateTime fromDate)
+        string tallyUrl, string companyName, DateTime fromDate, List<string> salesVoucherTypeNames)
     {
+        if (salesVoucherTypeNames.Count == 0) return new();
+
+        // Single Escape() call for the whole formula, not per-name — escaping
+        // each name individually double-encodes the quotes into literal
+        // "&quot;" text that Tally's formula parser rejects outright. Same
+        // proven pattern as GetVoucherInventoryAsync's typeMatch.
+        var typeMatch = string.Join(" OR ", salesVoucherTypeNames.Select(n =>
+            $@"$$IsEqual:$VoucherTypeName:""{n}"""));
+
         var xml = $@"<ENVELOPE>
   <HEADER><VERSION>1</VERSION><TALLYREQUEST>EXPORT</TALLYREQUEST><TYPE>COLLECTION</TYPE><ID>InvCheck</ID></HEADER>
   <BODY><DESC>
@@ -860,7 +906,7 @@ public class TallyService
         <FILTER>IsSales</FILTER>
         <FETCH>VoucherNumber,Date,VoucherTypeName,Reference,InvoiceOrderList.List:BasicPurchaseOrderNo</FETCH>
       </COLLECTION>
-      <SYSTEM TYPE=""Formulae"" NAME=""IsSales"">$$IsEqual:$VoucherTypeName:&quot;Sales&quot;</SYSTEM>
+      <SYSTEM TYPE=""Formulae"" NAME=""IsSales"">{Escape(typeMatch)}</SYSTEM>
     </TDLMESSAGE></TDL>
   </DESC></BODY>
 </ENVELOPE>";
@@ -934,6 +980,95 @@ public class TallyService
             return (true, companies);
         }
         catch { return (false, new()); }
+    }
+
+    // Creates a new party ledger master in Tally (Masters > Party Master
+    // approval workflow). Ported from the web app's TallyService — party
+    // approval used to push straight from the web app, but the client's
+    // Tally is only reachable from this Agent (TallySync:Mode=Agent), so the
+    // Agent is now the only thing that actually talks to Tally for anything,
+    // parties included. See SyncOrchestrator's manual-party-push step.
+    public async Task<(bool Success, string Message)> PushLedgerAsync(
+        string tallyUrl, Ledger ledger, string companyName, string? fssaiUdfField = null)
+    {
+        var today = DateTime.Today.ToString("yyyyMMdd");
+        var hasGstin = !string.IsNullOrWhiteSpace(ledger.GSTNo);
+        var hasState = !string.IsNullOrWhiteSpace(ledger.State);
+
+        var udfFieldName = fssaiUdfField?.Trim().Replace("UDF:", "", StringComparison.OrdinalIgnoreCase).Trim();
+        var udfXml = string.IsNullOrWhiteSpace(udfFieldName) || string.IsNullOrWhiteSpace(ledger.FSSAINo)
+            ? ""
+            : $@"
+            <UDF:{udfFieldName}.LIST DESC="""" ISLIST=""YES"" TYPE=""String"">
+              <UDF:{udfFieldName} DESC="""">{Escape(ledger.FSSAINo)}</UDF:{udfFieldName}>
+            </UDF:{udfFieldName}.LIST>";
+
+        var addressLines = (ledger.Address ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var addressXml = addressLines.Length == 0 ? "" : $@"
+              <ADDRESS.LIST TYPE=""String"">{string.Concat(addressLines.Select(a => $@"
+                <ADDRESS>{Escape(a)}</ADDRESS>"))}
+              </ADDRESS.LIST>";
+
+        var gstRegDetailsXml = $@"
+            <LEDGSTREGDETAILS.LIST>
+              <APPLICABLEFROM>{today}</APPLICABLEFROM>
+              <GSTREGISTRATIONTYPE>{(hasGstin ? "Regular" : "Unregistered")}</GSTREGISTRATIONTYPE>
+              {(hasState ? $"<STATE>{Escape(ledger.State!)}</STATE>" : "")}
+              {(hasState ? $"<PLACEOFSUPPLY>{Escape(ledger.State!)}</PLACEOFSUPPLY>" : "")}
+              {(hasGstin ? $"<GSTIN>{Escape(ledger.GSTNo!)}</GSTIN>" : "")}
+            </LEDGSTREGDETAILS.LIST>";
+
+        var mailingDetailsXml = $@"
+            <LEDMAILINGDETAILS.LIST>{addressXml}
+              <APPLICABLEFROM>{today}</APPLICABLEFROM>
+              <MAILINGNAME>{Escape(ledger.LedgerName)}</MAILINGNAME>
+              {(hasState ? $"<STATE>{Escape(ledger.State!)}</STATE>" : "")}
+              <COUNTRY>India</COUNTRY>
+            </LEDMAILINGDETAILS.LIST>";
+
+        var xml = $@"<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Import Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <IMPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>All Masters</REPORTNAME>
+        <STATICVARIABLES>
+          <SVCURRENTCOMPANY>{Escape(companyName)}</SVCURRENTCOMPANY>
+        </STATICVARIABLES>
+      </REQUESTDESC>
+      <REQUESTDATA>
+        <TALLYMESSAGE xmlns:UDF=""TallyUDF"">
+          <LEDGER NAME=""{Escape(ledger.LedgerName)}"" ACTION=""Create"">
+            <NAME>{Escape(ledger.LedgerName)}</NAME>
+            <PARENT>Sundry Debtors</PARENT>
+            <ISBILLWISEON>Yes</ISBILLWISEON>
+            <COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE>
+            {(string.IsNullOrWhiteSpace(ledger.MobileNo) ? "" : $"<LEDGERMOBILE>{Escape(ledger.MobileNo)}</LEDGERMOBILE>")}
+            {/* BILLCREDITPERIOD, not CreditPeriod — same field name the web
+               app's GetLedgersAsync already confirmed against a real ledger
+               export (see its comment there). */
+             (string.IsNullOrWhiteSpace(ledger.CreditPeriod) ? "" : $"<BILLCREDITPERIOD>{Escape(ledger.CreditPeriod)}</BILLCREDITPERIOD>")}{gstRegDetailsXml}{mailingDetailsXml}{udfXml}
+          </LEDGER>
+        </TALLYMESSAGE>
+      </REQUESTDATA>
+    </IMPORTDATA>
+  </BODY>
+</ENVELOPE>";
+
+        var doc = await PostXmlAsync(tallyUrl, xml);
+        if (doc == null) return (false, "Could not connect to Tally");
+
+        var lineError = doc.Descendants("LINEERROR").FirstOrDefault()?.Value;
+        if (!string.IsNullOrEmpty(lineError)) return (false, lineError);
+
+        if (doc.Descendants("CREATED").FirstOrDefault()?.Value == "1") return (true, "Created in Tally");
+        if (doc.Descendants("ALTERED").FirstOrDefault()?.Value == "1") return (true, "Updated in Tally");
+
+        var raw = doc.ToString();
+        return (false, raw[..Math.Min(300, raw.Length)]);
     }
 
     private static string GetName(XElement el) =>

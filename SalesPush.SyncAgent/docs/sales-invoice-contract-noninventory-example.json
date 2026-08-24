@@ -1,0 +1,27 @@
+{
+  "$comment": "Example: a sale with NO stock items — e.g. a service/consultancy invoice. items is empty; whatever was sold is just another ledgerEntries line (income ledger) alongside the tax line. The party's balancing entry is still computed the same mechanical way: -(sum of item amounts [0, since no items] + sum of ledgerEntries).",
+
+  "saleInvoiceId": 90043,
+  "invoiceNo": "19652",
+  "invoiceDate": "2025-04-03",
+  "invoiceTime": "11:15",
+  "companyId": 12,
+  "companyName": "ASGAR ALI YOUSIF TRADING CO LLC - MB (2022-26) - (from 1-Jan-25)",
+  "voucherType": "Sales AY TAX",
+
+  "partyLedgerName": "AL SHIRAA ALLAMEI BUILDING MATERIAL TRD CO LLC",
+  "partyState": "Dubai",
+  "partyEmirate": "Dubai",
+  "partyCountry": "UAE",
+  "partyTRN": "104136578200003",
+
+  "ledgerEntries": [
+    { "ledgerName": "Consultancy Income", "amount": 5000.000 },
+    { "ledgerName": "Vat@5%", "amount": 250.000 }
+  ],
+
+  "udf": {},
+  "enteredBy": "Neha",
+
+  "items": []
+}

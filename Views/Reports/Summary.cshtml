@@ -30,13 +30,22 @@
     <div class="col-12 text-center text-muted py-4 small"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>
 </div>
 
-<!-- Recent orders table -->
+<!-- Order Details table -->
 <div class="card">
-    <div class="card-header d-flex justify-content-between align-items-center py-2">
-        <span class="fw-semibold small"><i class="bi bi-list-ul me-1"></i>Recent Orders</span>
-        <button class="btn btn-outline-success btn-sm border-0 p-0 px-2" onclick="exportTable('recentTable','Recent_Orders')" title="Export CSV">
-            <i class="bi bi-file-earmark-excel-fill text-success"></i>
-        </button>
+    <div class="card-header d-flex justify-content-between align-items-center py-2 flex-wrap gap-2">
+        <span class="fw-semibold small"><i class="bi bi-list-ul me-1"></i>Order Details</span>
+        <div class="d-flex align-items-center gap-2">
+            <div class="input-group input-group-sm" style="width:220px">
+                <span class="input-group-text bg-transparent py-0"><i class="bi bi-search"></i></span>
+                <input type="text" id="orderSearch" class="form-control" placeholder="Search order no / party..." />
+            </div>
+            @if ((bool)ViewBag.CanExport)
+            {
+                <button class="btn btn-outline-success btn-sm border-0 p-0 px-2" onclick="exportTable('recentTable','Order_Details')" title="Export CSV (current page)">
+                    <i class="bi bi-file-earmark-excel-fill text-success"></i>
+                </button>
+            }
+        </div>
     </div>
     <div id="tableWrap">
         <div id="tableLoading" class="text-center py-4 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>
@@ -49,16 +58,36 @@
             </table>
         </div>
     </div>
+    <div class="card-footer d-flex justify-content-between align-items-center py-2" id="ordersFooter" style="display:none">
+        <span class="text-muted small" id="ordersCount"></span>
+        <nav>
+            <ul class="pagination pagination-sm mb-0" id="ordersPagination"></ul>
+        </nav>
+    </div>
 </div>
 
 @section Scripts {
 <script>
-$(function() { loadData(); });
+var orderSearchTimer;
 
+$(function() {
+    loadData();
+    $('#orderSearch').on('input', function() {
+        clearTimeout(orderSearchTimer);
+        orderSearchTimer = setTimeout(function() { loadOrders(1); }, 350);
+    });
+});
+
+// Re-runs both the stat cards and the Order Details grid — used by the
+// date-range Filter button, which invalidates both.
 function loadData() {
+    loadStats();
+    loadOrders(1);
+}
+
+function loadStats() {
     var params = { from: $('#rptFrom').val(), to: $('#rptTo').val() };
     $('#statsRow').html('<div class="col-12 text-center text-muted py-4 small"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>');
-    $('#tableLoading').show(); $('#tableContent').hide();
 
     $.get('/Reports/SummaryData', params, function(d) {
         var stats = [
@@ -78,13 +107,24 @@ function loadData() {
                 '</div></div>';
         });
         $('#statsRow').html(html);
+    }).fail(function() {
+        $('#statsRow').html('<div class="col-12"><div class="alert alert-danger">Failed to load data.</div></div>');
+    });
+}
 
+// Server-side paginated + searched — unlike the old fixed Take(10), every
+// order in the selected date range is reachable, just a page at a time.
+function loadOrders(page) {
+    var params = { from: $('#rptFrom').val(), to: $('#rptTo').val(), q: $('#orderSearch').val(), page: page || 1 };
+    $('#tableLoading').show(); $('#tableContent').hide(); $('#ordersFooter').hide();
+
+    $.get('/Reports/SummaryOrdersData', params, function(d) {
         var rows = '';
-        if (!d.recentOrders || !d.recentOrders.length) {
-            rows = '<tr><td colspan="6" class="text-center text-muted py-3">No orders in this period.</td></tr>';
+        if (!d.orders || !d.orders.length) {
+            rows = '<tr><td colspan="6" class="text-center text-muted py-3">No orders found.</td></tr>';
         } else {
-            d.recentOrders.forEach(function(o) {
-                var sc = { Draft:'badge-draft', Pending:'badge-pending', Synced:'badge-synced', Error:'badge-error' }[o.status] || 'badge-draft';
+            d.orders.forEach(function(o) {
+                var sc = { Cancelled:'badge-cancelled', Pending:'badge-pending', Synced:'badge-synced', Error:'badge-error' }[o.status] || 'badge-cancelled';
                 rows += '<tr>' +
                     '<td class="small"><a href="/SaleOrder/Details/' + o.saleOrderId + '">' + esc(o.orderNo) + '</a></td>' +
                     '<td class="small">' + esc(o.orderDate) + '</td>' +
@@ -97,10 +137,27 @@ function loadData() {
         }
         $('#tableBody').html(rows);
         $('#tableLoading').hide(); $('#tableContent').show();
+
+        renderPagination(d.total, d.page, d.pageSize);
     }).fail(function() {
-        $('#statsRow').html('<div class="col-12"><div class="alert alert-danger">Failed to load data.</div></div>');
         $('#tableLoading').html('<span class="text-danger small">Failed to load.</span>');
     });
+}
+
+function renderPagination(total, page, pageSize) {
+    if (!total) { $('#ordersFooter').hide(); return; }
+    var totalPages = Math.ceil(total / pageSize);
+    var from = (page - 1) * pageSize + 1;
+    var to = Math.min(page * pageSize, total);
+    $('#ordersCount').text(from + '–' + to + ' of ' + total + ' order' + (total > 1 ? 's' : ''));
+
+    var html = '';
+    for (var p = 1; p <= totalPages; p++) {
+        html += '<li class="page-item ' + (p === page ? 'active' : '') + '">' +
+            '<a class="page-link" href="#" onclick="loadOrders(' + p + ');return false;">' + p + '</a></li>';
+    }
+    $('#ordersPagination').html(html);
+    $('#ordersFooter').show();
 }
 
 function exportTable(tableId, filename) {

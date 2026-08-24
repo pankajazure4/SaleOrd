@@ -21,6 +21,17 @@ public class MastersController : Controller
     // the rest of this controller is.
     private const long MaxFssaiDocBytes = 5 * 1024 * 1024; // 5 MB
 
+    // PDF or a photo of the physical license — plenty of users don't have a
+    // scanned PDF and just snap a picture on their phone instead.
+    private static readonly Dictionary<string, string> AllowedFssaiTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [".pdf"]  = "application/pdf",
+        [".jpg"]  = "image/jpeg",
+        [".jpeg"] = "image/jpeg",
+        [".png"]  = "image/png",
+        [".webp"] = "image/webp"
+    };
+
     public MastersController(AppDbContext db, ActiveCompanyResolver resolver, PermissionService permSvc,
         IWebHostEnvironment env)
     {
@@ -92,8 +103,8 @@ public class MastersController : Controller
     // pending->approve pattern used for user signups.
     [HttpPost, ValidateAntiForgeryToken]
     [RequestSizeLimit(MaxFssaiDocBytes + 1024 * 1024)] // a little headroom over the file cap for the rest of the form
-    public async Task<IActionResult> CreateParty(string partyName, string? gstNo, string fssaiNo, string? address,
-        string? state, string contactNo, IFormFile? fssaiDocument)
+    public async Task<IActionResult> CreateParty(string partyName, string? outletName, string? gstNo, string fssaiNo, string? address,
+        string? state, string contactNo, string? paymentTerms, int? creditDays, IFormFile? fssaiDocument)
     {
         var (activeId, user) = await _resolver.ResolveAsync();
         if (user == null) return Json(new { success = false, message = "Session expired. Please login again." });
@@ -107,18 +118,30 @@ public class MastersController : Controller
         fssaiNo = (fssaiNo ?? "").Trim();
         if (string.IsNullOrEmpty(fssaiNo))
             return Json(new { success = false, message = "Food License No. (FSSAI) is required." });
+        if (fssaiNo.Length != 14 || !fssaiNo.All(char.IsDigit))
+            return Json(new { success = false, message = "Food License No. (FSSAI) must be exactly 14 digits." });
 
         contactNo = (contactNo ?? "").Trim();
         if (string.IsNullOrEmpty(contactNo))
             return Json(new { success = false, message = "Contact number is required." });
 
+        // "Days" suffix matches the format Tally itself uses for this field
+        // (e.g. "30 Days" — confirmed against a real ledger export, see
+        // TallyService.GetLedgersAsync) so it displays and pushes correctly
+        // whether it came from here or from a Tally-synced ledger.
+        var isCredit = string.Equals(paymentTerms, "Credit", StringComparison.OrdinalIgnoreCase);
+        if (isCredit && (!creditDays.HasValue || creditDays.Value <= 0))
+            return Json(new { success = false, message = "Enter the number of credit days." });
+        var creditPeriod = isCredit ? $"{creditDays!.Value} Days" : null;
+
+        var fssaiExt = fssaiDocument != null ? Path.GetExtension(fssaiDocument.FileName) : null;
         if (fssaiDocument != null)
         {
             if (fssaiDocument.Length > MaxFssaiDocBytes)
                 return Json(new { success = false, message = "Food License document must be under 5 MB." });
-            if (!string.Equals(Path.GetExtension(fssaiDocument.FileName), ".pdf", StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(fssaiDocument.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase))
-                return Json(new { success = false, message = "Food License document must be a PDF file." });
+            if (fssaiExt == null || !AllowedFssaiTypes.TryGetValue(fssaiExt, out var expectedContentType)
+                || !string.Equals(fssaiDocument.ContentType, expectedContentType, StringComparison.OrdinalIgnoreCase))
+                return Json(new { success = false, message = "Food License document must be a PDF or an image (JPG, PNG, WEBP)." });
         }
 
         var exists = await _db.Ledgers.AnyAsync(l => l.CompanyId == activeId && l.LedgerName == partyName);
@@ -131,21 +154,24 @@ public class MastersController : Controller
         var ledger = new Ledger
         {
             LedgerName     = partyName,
+            OutletName     = string.IsNullOrWhiteSpace(outletName) ? null : outletName.Trim(),
             Parent         = "Sundry Debtors",
             GSTNo          = string.IsNullOrWhiteSpace(gstNo) ? null : gstNo.Trim(),
             FSSAINo        = fssaiNo,
             Address        = string.IsNullOrWhiteSpace(address) ? null : address.Trim(),
             State          = string.IsNullOrWhiteSpace(state) ? null : state.Trim(),
             MobileNo       = contactNo,
+            CreditPeriod   = creditPeriod,
             CompanyId      = activeId,
             LastSyncedAt   = DateTime.Now,
-            ApprovalStatus = LedgerApprovalStatus.Pending
+            ApprovalStatus = LedgerApprovalStatus.Pending,
+            IsManuallyCreated = true
         };
 
         if (fssaiDocument != null)
         {
             Directory.CreateDirectory(FssaiUploadsRoot);
-            var storedFileName = $"{Guid.NewGuid():N}.pdf";
+            var storedFileName = $"{Guid.NewGuid():N}{fssaiExt!.ToLowerInvariant()}";
             await using (var stream = System.IO.File.Create(Path.Combine(FssaiUploadsRoot, storedFileName)))
                 await fssaiDocument.CopyToAsync(stream);
             ledger.FSSAIDocumentPath = storedFileName;
@@ -161,9 +187,10 @@ public class MastersController : Controller
         });
     }
 
-    // Streams a party's FSSAI PDF back — never a static-file URL, so this is
-    // the only path that can read one, and it's gated by the same
-    // Masters-Parties permission as everything else here.
+    // Streams a party's FSSAI document back (PDF or image — see
+    // AllowedFssaiTypes) — never a static-file URL, so this is the only path
+    // that can read one, and it's gated by the same Masters-Parties
+    // permission as everything else here.
     [HttpGet]
     public async Task<IActionResult> FssaiDocument(int ledgerId)
     {
@@ -177,8 +204,11 @@ public class MastersController : Controller
         var path = Path.Combine(FssaiUploadsRoot, ledger.FSSAIDocumentPath);
         if (!System.IO.File.Exists(path)) return NotFound();
 
+        var ext = Path.GetExtension(ledger.FSSAIDocumentPath);
+        var contentType = AllowedFssaiTypes.TryGetValue(ext, out var ct) ? ct : "application/octet-stream";
+
         var bytes = await System.IO.File.ReadAllBytesAsync(path);
-        return File(bytes, "application/pdf", $"{ledger.LedgerName}-FSSAI.pdf");
+        return File(bytes, contentType, $"{ledger.LedgerName}-FSSAI{ext}");
     }
 
     [HttpGet]

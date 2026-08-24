@@ -53,6 +53,7 @@ public class DashboardController : Controller
                 Pending    = g.Count(o => o.Status == OrderStatus.Pending),
                 Synced     = g.Count(o => o.Status == OrderStatus.Synced),
                 Error      = g.Count(o => o.Status == OrderStatus.Error),
+                Invoiced   = g.Count(o => o.IsInvoiced),
                 TotalValue = g.Sum(o => o.TotalAmount),
                 TodayCount = g.Count(o => o.OrderDate == today),
                 MonthValue = g.Where(o => o.OrderDate >= monthStart).Sum(o => o.TotalAmount)
@@ -100,6 +101,7 @@ public class DashboardController : Controller
                 Pending    = g.Count(o => o.Status == OrderStatus.Pending),
                 Synced     = g.Count(o => o.Status == OrderStatus.Synced),
                 Error      = g.Count(o => o.Status == OrderStatus.Error),
+                Invoiced   = g.Count(o => o.IsInvoiced),
                 TotalValue = g.Sum(o => o.TotalAmount),
                 TodayCount = g.Count(o => o.OrderDate == today),
                 MonthValue = g.Where(o => o.OrderDate >= monthStart).Sum(o => o.TotalAmount)
@@ -127,7 +129,7 @@ public class DashboardController : Controller
 
         return Json(new
         {
-            stats = stats ?? new { Total = 0, Pending = 0, Synced = 0, Error = 0, TotalValue = 0m, TodayCount = 0, MonthValue = 0m },
+            stats = stats ?? new { Total = 0, Pending = 0, Synced = 0, Error = 0, Invoiced = 0, TotalValue = 0m, TodayCount = 0, MonthValue = 0m },
             recentOrders,
             lastSync = lastSync.HasValue ? lastSync.Value.ToString("dd MMM, h:mm tt") : "Never"
         });

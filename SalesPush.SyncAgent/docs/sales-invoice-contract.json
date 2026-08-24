@@ -1,0 +1,188 @@
+{
+  "saleInvoiceId": 90042,
+  "invoiceNo": "19651",
+  "invoiceDate": "2025-04-02",
+  "invoiceTime": "09:30",
+  "companyId": 12,
+  "companyName": "ASGAR ALI YOUSIF TRADING CO LLC - MB (2022-26) - (from 1-Jan-25)",
+  "voucherType": "Sales AY TAX",
+
+  "partyLedgerName": "AL SHIRAA ALLAMEI BUILDING MATERIAL TRD CO LLC",
+  "partyState": "Dubai",
+  "partyEmirate": "Dubai",
+  "partyCountry": "UAE",
+  "partyTRN": "104136578200003",
+
+  "ledgerEntries": [
+    { "ledgerName": "Vat@5%", "amount": 404.940 }
+  ],
+
+  "udf": {
+    "vchAgentNameStoUDf": "SC",
+    "eiAreaName": "UNION MALL",
+    "udfCitySto": "SHJ",
+    "_UDF_788534172": "Cash On Delivery",
+    "_UDF_788537002": "Cash",
+    "_UDF_788537005": "Cash"
+  },
+  "enteredBy": "Neha",
+
+  "items": [
+    {
+      "stockItemName": "FLOOR DRAIN 3 PCS 10 X 10-6067201-",
+      "rate": 5.600,
+      "unit": "Pcs",
+      "actualQty": 120,
+      "billedQty": 120,
+      "amount": 672.000,
+      "godownName": "AJM",
+      "batchName": "Primary Batch",
+      "accountingAllocations": [
+        { "ledgerName": "SHIRA AL LAMEA SALES", "amount": 672.000 }
+      ]
+    },
+    {
+      "stockItemName": "SHOWER COLUM SET BLACK-6065110-",
+      "rate": 56.000,
+      "unit": "Pcs",
+      "actualQty": 7,
+      "billedQty": 7,
+      "amount": 392.000,
+      "godownName": "AJM",
+      "batchName": "Primary Batch",
+      "accountingAllocations": [
+        { "ledgerName": "SHIRA AL LAMEA SALES", "amount": 392.000 }
+      ]
+    },
+    {
+      "stockItemName": "LINEAR DRAIN 10 X 60 CERAMIC-6067412-",
+      "rate": 41.600,
+      "unit": "Pcs",
+      "actualQty": 60,
+      "billedQty": 60,
+      "amount": 2496.000,
+      "godownName": "AJM",
+      "batchName": "Primary Batch",
+      "accountingAllocations": [
+        { "ledgerName": "SHIRA AL LAMEA SALES", "amount": 2496.000 }
+      ]
+    },
+    {
+      "stockItemName": "LINEAR DRAIN 10 X 30 CERAMIC-6067411-",
+      "rate": 25.600,
+      "unit": "Pcs",
+      "actualQty": 18,
+      "billedQty": 18,
+      "amount": 460.800,
+      "godownName": "AJM",
+      "batchName": "Primary Batch",
+      "accountingAllocations": [
+        { "ledgerName": "SHIRA AL LAMEA SALES", "amount": 460.800 }
+      ]
+    },
+    {
+      "stockItemName": "SILVER PVC HOSE-6066210/120 CM-",
+      "rate": 5.600,
+      "unit": "Pcs",
+      "actualQty": 60,
+      "billedQty": 60,
+      "amount": 336.000,
+      "godownName": "AJM",
+      "batchName": "Primary Batch",
+      "accountingAllocations": [
+        { "ledgerName": "SHIRA AL LAMEA SALES", "amount": 336.000 }
+      ]
+    },
+    {
+      "stockItemName": "SS SINK SINGLE 50 X 40 CM BLACK-HS504022B-",
+      "rate": 84.000,
+      "unit": "Pcs",
+      "actualQty": 5,
+      "billedQty": 5,
+      "amount": 420.000,
+      "godownName": "AJM",
+      "batchName": "Primary Batch",
+      "accountingAllocations": [
+        { "ledgerName": "SHIRA AL LAMEA SALES", "amount": 420.000 }
+      ]
+    },
+    {
+      "stockItemName": "SS SINK SINGLE 50 X 40 CM SILVER-HS504022M-",
+      "rate": 72.000,
+      "unit": "Pcs",
+      "actualQty": 5,
+      "billedQty": 5,
+      "amount": 360.000,
+      "godownName": "AJM",
+      "batchName": "Primary Batch",
+      "accountingAllocations": [
+        { "ledgerName": "SHIRA AL LAMEA SALES", "amount": 360.000 }
+      ]
+    },
+    {
+      "stockItemName": "SHOWER COLUM SET-6065116-",
+      "rate": 56.000,
+      "unit": "Pcs",
+      "actualQty": 12,
+      "billedQty": 12,
+      "amount": 672.000,
+      "godownName": "AJM",
+      "batchName": "Primary Batch",
+      "accountingAllocations": [
+        { "ledgerName": "SHIRA AL LAMEA SALES", "amount": 672.000 }
+      ]
+    },
+    {
+      "stockItemName": "SHOWER SET PIANO TYPE GREY-6065401-",
+      "rate": 96.000,
+      "unit": "Pcs",
+      "actualQty": 6,
+      "billedQty": 6,
+      "amount": 576.000,
+      "godownName": "AJM",
+      "batchName": "Primary Batch",
+      "accountingAllocations": [
+        { "ledgerName": "SHIRA AL LAMEA SALES", "amount": 576.000 }
+      ]
+    },
+    {
+      "stockItemName": "SHOWER SET PIANO TYPE BLACK-6065401B-",
+      "rate": 104.000,
+      "unit": "Pcs",
+      "actualQty": 10,
+      "billedQty": 10,
+      "amount": 1040.000,
+      "godownName": "AJM",
+      "batchName": "Primary Batch",
+      "accountingAllocations": [
+        { "ledgerName": "SHIRA AL LAMEA SALES", "amount": 1040.000 }
+      ]
+    },
+    {
+      "stockItemName": "HEATER FLEXIBLE-6068110/45 CM-",
+      "rate": 2.000,
+      "unit": "Pcs",
+      "actualQty": 105,
+      "billedQty": 105,
+      "amount": 210.000,
+      "godownName": "AJM",
+      "batchName": "Primary Batch",
+      "accountingAllocations": [
+        { "ledgerName": "SHIRA AL LAMEA SALES", "amount": 210.000 }
+      ]
+    },
+    {
+      "stockItemName": "HEATER FLEXIBLE-6068120/60 CM-",
+      "rate": 2.320,
+      "unit": "Pcs",
+      "actualQty": 200,
+      "billedQty": 200,
+      "amount": 464.000,
+      "godownName": "AJM",
+      "batchName": "Primary Batch",
+      "accountingAllocations": [
+        { "ledgerName": "SHIRA AL LAMEA SALES", "amount": 464.000 }
+      ]
+    }
+  ]
+}

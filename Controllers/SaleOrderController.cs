@@ -218,8 +218,6 @@ public class SaleOrderController : Controller
             TaxType      = model.TaxType
         };
 
-        var defaultGodown = await GetDefaultGodownAsync(companyId);
-
         foreach (var item in model.Items.Where(i => i.Qty > 0))
         {
             var stockItem = await _db.StockItems.FindAsync(item.StockItemId);
@@ -234,9 +232,7 @@ public class SaleOrderController : Controller
                 Qty         = item.Qty,
                 Rate        = item.Rate,
                 Discount    = item.Discount,
-                Amount      = Math.Round(amount, 2, MidpointRounding.AwayFromZero),
-                GodownId    = defaultGodown?.GodownId,
-                GodownName  = defaultGodown?.GodownName
+                Amount      = Math.Round(amount, 2, MidpointRounding.AwayFromZero)
             };
             await ApplyItemTaxAsync(soItem, companyId, order.TaxType, order.OrderDate);
             order.Items.Add(soItem);
@@ -272,6 +268,7 @@ public class SaleOrderController : Controller
         if (user.Role == AppRoles.Salesman && order.CreatedById != user.Id)
             return Forbid();
 
+        ViewBag.CanPrint = await _permSvc.HasAsync(user.Role, AppPermissions.PrintSaleOrder);
         return View(order);
     }
 
@@ -290,7 +287,7 @@ public class SaleOrderController : Controller
             return RedirectToAction("Details", new { id });
         }
 
-        order.Status = OrderStatus.Draft;
+        order.Status = OrderStatus.Cancelled;
         await _db.SaveChangesAsync();
 
         await _activity.LogAsync(user.Id, user.FullName, user.Role, ActivityActions.CancelOrder,
@@ -300,31 +297,12 @@ public class SaleOrderController : Controller
         return RedirectToAction("Index");
     }
 
-    [HttpPost, ValidateAntiForgeryToken]
-    public async Task<IActionResult> Resubmit(int id)
-    {
-        var (companyId, user) = await _resolver.ResolveAsync();
-        if (user == null) return Unauthorized();
-
-        var order = await _db.SaleOrders.FindAsync(id);
-        if (order == null || order.CompanyId != companyId) return NotFound();
-
-        if (order.Status != OrderStatus.Error)
-        {
-            TempData["Error"] = "Only orders with errors can be resubmitted.";
-            return RedirectToAction("Details", new { id });
-        }
-
-        order.Status = OrderStatus.Pending;
-        order.SyncError = null;
-        await _db.SaveChangesAsync();
-
-        await _activity.LogAsync(user.Id, user.FullName, user.Role, ActivityActions.ResubmitOrder,
-            "SaleOrder", order.SaleOrderId, $"Resubmitted {order.OrderNo}", companyId);
-
-        TempData["Success"] = "Order resubmitted for sync.";
-        return RedirectToAction("Details", new { id });
-    }
+    // Resubmit action removed — it only ever did `Status = Pending` +
+    // `SyncError = null`, nothing that touched Tally. Editing an Error order
+    // (see the Status-bypass above) already does exactly that on save, so
+    // this was a duplicate path to the same effect. Historical "Resubmitted"
+    // entries in Admin > User Activity are untouched; new recoveries now
+    // just show up there as EditOrder.
 
     [HttpGet]
     public async Task<IActionResult> Edit(int id)
@@ -351,17 +329,25 @@ public class SaleOrderController : Controller
             return RedirectToAction("Details", new { id });
         }
 
-        // Edit deadline check
-        var editEnabled = (await _db.AppSettings.FirstOrDefaultAsync(s => s.Key == "OrderEditEnabled"))?.Value == "true";
-        if (!editEnabled)
+        // Edit deadline check — skipped entirely for Error orders. There's no
+        // separate "Resubmit to Tally" button anymore (editing already resets
+        // Status to Pending below, which is all Resubmit ever did), so Edit
+        // has to stay reachable for a stuck order regardless of the global
+        // edit toggle or deadline, or a failed push becomes unrecoverable
+        // from the UI.
+        if (order.Status != OrderStatus.Error)
         {
-            TempData["Error"] = "Order editing is currently disabled.";
-            return RedirectToAction("Details", new { id });
-        }
-        if (order.EditDeadline.HasValue && DateTime.Now > order.EditDeadline.Value)
-        {
-            TempData["Error"] = $"Edit window closed at {order.EditDeadline.Value:dd-MMM-yyyy hh:mm tt}.";
-            return RedirectToAction("Details", new { id });
+            var editEnabled = (await _db.AppSettings.FirstOrDefaultAsync(s => s.Key == "OrderEditEnabled"))?.Value == "true";
+            if (!editEnabled)
+            {
+                TempData["Error"] = "Order editing is currently disabled.";
+                return RedirectToAction("Details", new { id });
+            }
+            if (order.EditDeadline.HasValue && DateTime.Now > order.EditDeadline.Value)
+            {
+                TempData["Error"] = $"Edit window closed at {order.EditDeadline.Value:dd-MMM-yyyy hh:mm tt}.";
+                return RedirectToAction("Details", new { id });
+            }
         }
 
         await LoadDropdownsAsync(companyId);
@@ -437,12 +423,16 @@ public class SaleOrderController : Controller
         if (order.IsInvoiced)
             ModelState.AddModelError("", $"Order {order.OrderNo} is invoiced in Tally and cannot be edited.");
 
-        var editEnabled = (await _db.AppSettings.FirstOrDefaultAsync(s => s.Key == "OrderEditEnabled"))?.Value == "true";
-        if (!editEnabled)
-            ModelState.AddModelError("", "Order editing is currently disabled.");
+        // Same Error-status bypass as the GET action above.
+        if (order.Status != OrderStatus.Error)
+        {
+            var editEnabled = (await _db.AppSettings.FirstOrDefaultAsync(s => s.Key == "OrderEditEnabled"))?.Value == "true";
+            if (!editEnabled)
+                ModelState.AddModelError("", "Order editing is currently disabled.");
 
-        if (order.EditDeadline.HasValue && DateTime.Now > order.EditDeadline.Value)
-            ModelState.AddModelError("", $"Edit window closed at {order.EditDeadline.Value:dd-MMM-yyyy hh:mm tt}.");
+            if (order.EditDeadline.HasValue && DateTime.Now > order.EditDeadline.Value)
+                ModelState.AddModelError("", $"Edit window closed at {order.EditDeadline.Value:dd-MMM-yyyy hh:mm tt}.");
+        }
 
         if (!model.Items.Any() || model.Items.All(i => i.Qty <= 0))
             ModelState.AddModelError("", "Add at least one item with quantity.");
@@ -483,8 +473,6 @@ public class SaleOrderController : Controller
         _db.SaleOrderItems.RemoveRange(order.Items);
         order.Items.Clear();
 
-        var defaultGodown = await GetDefaultGodownAsync(companyId);
-
         foreach (var item in model.Items.Where(i => i.Qty > 0))
         {
             var stockItem = await _db.StockItems.FindAsync(item.StockItemId);
@@ -499,9 +487,7 @@ public class SaleOrderController : Controller
                 Qty         = item.Qty,
                 Rate        = item.Rate,
                 Discount    = item.Discount,
-                Amount      = Math.Round(amount, 2, MidpointRounding.AwayFromZero),
-                GodownId    = defaultGodown?.GodownId,
-                GodownName  = defaultGodown?.GodownName
+                Amount      = Math.Round(amount, 2, MidpointRounding.AwayFromZero)
             };
             await ApplyItemTaxAsync(soItem, companyId, order.TaxType, order.OrderDate);
             order.Items.Add(soItem);
@@ -556,6 +542,7 @@ public class SaleOrderController : Controller
     {
         var (companyId, user) = await _resolver.ResolveAsync();
         if (user == null) return RedirectToAction("Login", "Account");
+        if (!await _permSvc.HasAsync(user.Role, AppPermissions.PrintSaleOrder)) return Forbid();
 
         var order = await _db.SaleOrders
             .Include(o => o.Items)
@@ -662,27 +649,15 @@ public class SaleOrderController : Controller
         return Json(parties);
     }
 
-    private async Task LoadDropdownsAsync(int companyId)
-    {
-        ViewBag.Godowns = await _db.Godowns
-            .Where(g => g.CompanyId == companyId)
-            .OrderBy(g => g.GodownName)
-            .ToListAsync();
-    }
-
-    // Every item gets this Godown automatically — there's no per-item picker
-    // in the order form anymore (see Settings > Order Defaults).
-    private async Task<Godown?> GetDefaultGodownAsync(int companyId)
-    {
-        var name = await _db.AppSettings
-            .Where(s => s.Key == "DefaultGodownName")
-            .Select(s => s.Value)
-            .FirstOrDefaultAsync();
-
-        if (string.IsNullOrWhiteSpace(name)) return null;
-
-        return await _db.Godowns.FirstOrDefaultAsync(g => g.CompanyId == companyId && g.GodownName == name);
-    }
+    // Godown auto-assignment (single admin-configured default applied to
+    // every item, no per-item picker) was removed — a stale/wrong value
+    // there silently attached the wrong Godown to every pushed order.
+    // GODOWNNAME in the Tally push is now simply omitted for every item
+    // (see TallyService.PushSaleOrderAsync), matching how a manually saved
+    // order in Tally behaves when no godown is picked. Kept as a no-op
+    // (rather than removing all 6 call sites) as a hook for future
+    // per-company dropdown data.
+    private Task LoadDropdownsAsync(int companyId) => Task.CompletedTask;
 
     private async Task<string> GenerateOrderNoAsync(int companyId)
     {

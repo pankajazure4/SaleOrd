@@ -21,7 +21,7 @@
     <div class="col-4 col-md-3">
         <select id="statusFilter" class="form-select form-select-sm">
             <option value="">All Status</option>
-            @foreach (var s in new[] { "Draft", "Pending", "Synced", "Error" })
+            @foreach (var s in new[] { "Cancelled", "Pending", "Synced", "Error" })
             {
                 <option value="@s">@s</option>
             }
@@ -38,7 +38,7 @@
             "Pending" => "badge-pending",
             "Synced"  => "badge-synced",
             "Error"   => "badge-error",
-            _         => "badge-draft"
+            _         => "badge-cancelled"
         };
         <a href="/SaleOrder/Details/@o.SaleOrderId" class="text-decoration-none">
             <div class="order-card card px-3 py-2">
@@ -145,9 +145,9 @@ function renderOrders(orders) {
     $('#searchStatus').text(count === 50 ? '50+ results' : count + ' result' + (count > 1 ? 's' : ''));
 
     var html = '';
-    var statusClasses = { Draft: 'badge-draft', Pending: 'badge-pending', Synced: 'badge-synced', Error: 'badge-error' };
+    var statusClasses = { Cancelled: 'badge-cancelled', Pending: 'badge-pending', Synced: 'badge-synced', Error: 'badge-error' };
     orders.forEach(function(o) {
-        var sc = statusClasses[o.status] || 'badge-draft';
+        var sc = statusClasses[o.status] || 'badge-cancelled';
         var errorHtml = (o.status === 'Error' && o.syncError)
             ? '<div class="small text-danger text-truncate">' + esc(o.syncError) + '</div>' : '';
         html += '<a href="/SaleOrder/Details/' + o.saleOrderId + '" class="text-decoration-none">' +

@@ -271,7 +271,7 @@ function loadOrdersDetail(force) {
             html = '<tr><td colspan="7" class="text-center text-muted py-3">No orders found.</td></tr>';
         } else {
             data.forEach(function(o) {
-                var statusBadge = o.status === 'Pending' ? 'badge-pending' : o.status === 'Synced' ? 'badge-synced' : o.status === 'Error' ? 'badge-error' : 'badge-draft';
+                var statusBadge = o.status === 'Pending' ? 'badge-pending' : o.status === 'Synced' ? 'badge-synced' : o.status === 'Error' ? 'badge-error' : 'badge-cancelled';
                 html += '<tr>' +
                     '<td class="small"><a href="/SaleOrder/Details/' + o.saleOrderId + '">' + esc(o.orderNo) + '</a></td>' +
                     '<td class="small">' + fmtDate(o.orderDate) + '</td>' +

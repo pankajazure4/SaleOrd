@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SaleOrd.Data;
 
@@ -11,9 +12,11 @@ using SaleOrd.Data;
 namespace SaleOrd.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260812120112_MoveOutletNameFromSignupRequestToLedger")]
+    partial class MoveOutletNameFromSignupRequestToLedger
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -432,9 +435,6 @@ namespace SaleOrd.Migrations
                     b.Property<string>("IncomeTaxNo")
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<bool>("IsManuallyCreated")
-                        .HasColumnType("bit");
-
                     b.Property<DateTime>("LastSyncedAt")
                         .HasColumnType("datetime2");
 
@@ -473,9 +473,6 @@ namespace SaleOrd.Migrations
 
                     b.Property<string>("State")
                         .HasColumnType("nvarchar(max)");
-
-                    b.Property<DateTime?>("TallyPushedAt")
-                        .HasColumnType("datetime2");
 
                     b.Property<string>("TaxType")
                         .HasColumnType("nvarchar(max)");

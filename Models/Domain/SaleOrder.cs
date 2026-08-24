@@ -22,7 +22,7 @@ public class SaleOrder
     public decimal RoundOff { get; set; }
     public decimal GrandTotal { get; set; }    // TotalAmount + TaxTotal + RoundOff
 
-    public OrderStatus Status { get; set; } = OrderStatus.Draft;
+    public OrderStatus Status { get; set; } = OrderStatus.Cancelled;
     public string? TallyVoucherNo { get; set; }
     public string? SyncError { get; set; }
     public string CreatedById { get; set; } = string.Empty;
@@ -44,7 +44,11 @@ public class SaleOrder
 
 public enum OrderStatus
 {
-    Draft = 0,
+    // Underlying value 0 is unchanged from the old "Draft" name — every
+    // existing row keeps meaning exactly what it already meant (Cancel sets
+    // this), just relabeled since "Draft" read as an unsubmitted
+    // work-in-progress order, which this never was.
+    Cancelled = 0,
     Pending = 1,
     Synced = 2,
     Error = 3

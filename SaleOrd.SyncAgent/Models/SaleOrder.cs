@@ -21,7 +21,7 @@ public class SaleOrder
     public decimal RoundOff { get; set; }
     public decimal GrandTotal { get; set; }
 
-    public OrderStatus Status { get; set; } = OrderStatus.Draft;
+    public OrderStatus Status { get; set; } = OrderStatus.Cancelled;
     public string? TallyVoucherNo { get; set; }
     public string? SyncError { get; set; }
     public DateTime? SyncedAt { get; set; }
@@ -37,7 +37,8 @@ public class SaleOrder
 
 public enum OrderStatus
 {
-    Draft = 0,
+    // See the web app's OrderStatus for why this was renamed from "Draft".
+    Cancelled = 0,
     Pending = 1,
     Synced = 2,
     Error = 3
