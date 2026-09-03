@@ -56,7 +56,13 @@ public class SaleOrderListVM
     public string LedgerName { get; set; } = string.Empty;
     public decimal TotalAmount { get; set; }
     public OrderStatus Status { get; set; }
+    public bool IsInvoiced { get; set; }
     public string CreatedByName { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
     public string? SyncError { get; set; }
+
+    // What the status badge actually shows — a Synced order that's since
+    // been invoiced in Tally reads as "Invoiced", not "Synced", everywhere
+    // this label is used (order list, details, dashboard, reports).
+    public string StatusLabel => Status == OrderStatus.Synced && IsInvoiced ? "Invoiced" : Status.ToString();
 }

@@ -349,6 +349,11 @@
                     $('<div class="text-muted" style="font-size:.75rem"></div>')
                         .text('UOM: ' + item.uom + (item.rate ? ' · Rate: ₹' + item.rate.toFixed(2) : ''))
                         .appendTo($a);
+                    if (item.remark) {
+                        $('<div class="text-muted" style="font-size:.7rem"></div>')
+                            .html('<i class="bi bi-box-seam me-1"></i>' + escHtml(item.remark))
+                            .appendTo($a);
+                    }
                     dd.append($a);
                 });
             });
@@ -444,13 +449,9 @@
             itemsList[parseInt(editIdx)] = item;
             cancelEditItem();
         } else {
-            // Check duplicate items
-            var duplicate = itemsList.find(i => i.stockItemId === item.stockItemId);
-            if (duplicate) {
-                showToast('danger', 'This item is already added. Edit that item instead.', 'Duplicate Item');
-                return;
-            }
-            // Add mode
+            // Same stock item can be added more than once as separate line
+            // rows (e.g. different rate/batch for the same item on one
+            // order) — no duplicate check here on purpose.
             itemsList.push(item);
             clearEntryFields();
         }

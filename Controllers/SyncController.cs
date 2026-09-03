@@ -513,11 +513,13 @@ public class SyncController : Controller
     {
         var companyIds = companies.Select(c => c.CompanyId).ToList();
 
+        // No Take(N) — see OrderPushJob's mirror of this query for why a
+        // fixed cap here caused a real client's oldest-50 queue to never
+        // advance past a specific date.
         var orders = await _db.SaleOrders
             .Include(o => o.Company)
             .Where(o => companyIds.Contains(o.CompanyId) && o.Status == OrderStatus.Synced && !o.IsInvoiced)
             .OrderBy(o => o.SaleOrderId)
-            .Take(50)
             .ToListAsync();
 
         if (!orders.Any()) return 0;

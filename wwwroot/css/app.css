@@ -161,6 +161,7 @@ a { color: var(--primary); }
 .badge-cancelled { background: #9ca3af; }
 .badge-pending { background: var(--warning); color: #fff; }
 .badge-synced  { background: var(--success); color: #fff; }
+.badge-invoiced { background: #3730a3; color: #fff; }
 .badge-error   { background: var(--danger); color: #fff; }
 
 /* ── Order cards (list) ────────────────────────────── */

@@ -145,14 +145,18 @@ public class OrderPushJob : BackgroundService
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var tallyService = scope.ServiceProvider.GetRequiredService<TallyService>();
 
-        // Check up to 50 synced-but-not-invoiced orders per cycle — scoped to
-        // active companies only; the openInTally check per company group
-        // below is the second half of the "IsActive AND open in Tally" pair.
+        // No Take(N) here on purpose — this used to cap at 50, ORDER BY
+        // SaleOrderId, no rotation, which meant every cycle re-checked the
+        // SAME oldest 50 uninvoiced orders. If any of those never actually
+        // match, the queue never advances to newer ones — confirmed on the
+        // live Agent (its mirror of this same query) where nothing past a
+        // specific date ever got checked at all. Scoped to active companies
+        // only; the openInTally check per company group below is the second
+        // half of the "IsActive AND open in Tally" pair.
         var orders = await db.SaleOrders
             .Include(o => o.Company)
             .Where(o => o.Status == OrderStatus.Synced && !o.IsInvoiced && o.Company != null && o.Company.IsActive)
             .OrderBy(o => o.SaleOrderId)
-            .Take(50)
             .ToListAsync();
 
         if (!orders.Any()) return;
@@ -183,6 +187,7 @@ public class OrderPushJob : BackgroundService
             var salesTypes = await tallyService.GetSalesVoucherTypeNamesAsync(tallyUrl, company.TallyCompanyName);
             var invoices = await tallyService.GetRecentSalesInvoicesAsync(tallyUrl, company.TallyCompanyName, fromDate, salesTypes);
 
+            var unmatchedOrderNos = new List<string>();
             foreach (var order in groups[g])
             {
                 if (TallyService.TryMatchInvoice(invoices, order.OrderNo, out var invNo, out var invDate))
@@ -193,6 +198,26 @@ public class OrderPushJob : BackgroundService
                     changed = true;
                     _logger.LogInformation("Order {OrderNo} invoiced in Tally as {InvNo}", order.OrderNo, invNo);
                 }
+                else
+                {
+                    unmatchedOrderNos.Add(order.OrderNo);
+                }
+            }
+
+            // Quoted, side-by-side dump of what our own OrderNo strings look
+            // like vs what Tally's vouchers actually carry as order refs — a
+            // real mismatch (stray whitespace, case, an extra character) is
+            // directly visible here without another manual Postman round.
+            if (unmatchedOrderNos.Count > 0)
+            {
+                var sampleOrders = string.Join(", ", unmatchedOrderNos.Take(10).Select(o => $"'{o}'"));
+                _logger.LogWarning("{Count} order(s) NOT matched — e.g. {Sample}{More}",
+                    unmatchedOrderNos.Count, sampleOrders, unmatchedOrderNos.Count > 10 ? $" (+{unmatchedOrderNos.Count - 10} more)" : "");
+
+                var allOrderRefs = invoices.SelectMany(inv => inv.OrderRefs).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                var sampleRefs = string.Join(", ", allOrderRefs.Take(10).Select(r => $"'{r}'"));
+                _logger.LogInformation("{Count} distinct order-ref(s) found across {VoucherCount} fetched voucher(s) — e.g. {Sample}{More}",
+                    allOrderRefs.Count, invoices.Count, sampleRefs, allOrderRefs.Count > 10 ? $" (+{allOrderRefs.Count - 10} more)" : "");
             }
 
             if (g < groups.Count - 1)

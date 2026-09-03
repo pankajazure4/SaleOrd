@@ -439,6 +439,7 @@ public class SyncOrchestrator
                 _logger.Info($"[{company.CompanyName}] {invoices.Count} Sales voucher(s) fetched from Tally ({string.Join(", ", salesTypes)}) for matching.");
 
                 int matchedThisCompany = 0;
+                var unmatchedOrderNos = new List<string>();
                 foreach (var order in uninvoiced)
                 {
                     if (TallyService.TryMatchInvoice(invoices, order.OrderNo, out var invNo, out var invDate))
@@ -448,18 +449,29 @@ public class SyncOrchestrator
                         matchedThisCompany++;
                         _logger.Info($"Order {order.OrderNo} invoiced in Tally as {invNo}");
                     }
+                    else
+                    {
+                        unmatchedOrderNos.Add(order.OrderNo);
+                    }
                 }
 
-                // If invoices.Count is 0 (or clearly too low) while orders
-                // stay unmatched cycle after cycle, that points at the Tally
-                // query itself (wrong company, permissions, voucher types);
-                // if invoices.Count looks right but orders still don't
-                // match, the invoice was likely raised without linking it to
-                // the Sales Order in Tally (REFERENCE/order-list only
-                // auto-fills when raised "against" the order).
-                var unmatched = uninvoiced.Count - matchedThisCompany;
-                if (unmatched > 0)
-                    _logger.Info($"[{company.CompanyName}] {unmatched} order(s) still not matched to any fetched Sales voucher.");
+                // Quoted, side-by-side dump of what our own OrderNo strings
+                // look like vs what Tally's vouchers actually carry as order
+                // refs — a real mismatch (stray whitespace, case, an extra
+                // character) is directly visible here without another manual
+                // Postman round. Capped at 10 each so this stays readable.
+                if (unmatchedOrderNos.Count > 0)
+                {
+                    var sampleOrders = unmatchedOrderNos.Take(10).Select(o => $"'{o}'");
+                    _logger.Warn($"[{company.CompanyName}] {unmatchedOrderNos.Count} order(s) NOT matched — e.g. {string.Join(", ", sampleOrders)}" +
+                        (unmatchedOrderNos.Count > 10 ? $" (+{unmatchedOrderNos.Count - 10} more)" : ""));
+
+                    var allOrderRefs = invoices.SelectMany(inv => inv.OrderRefs).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                    var sampleRefs = allOrderRefs.Take(10).Select(r => $"'{r}'");
+                    _logger.Info($"[{company.CompanyName}] {allOrderRefs.Count} distinct order-ref(s) found across {invoices.Count} fetched voucher(s) — e.g. {string.Join(", ", sampleRefs)}" +
+                        (allOrderRefs.Count > 10 ? $" (+{allOrderRefs.Count - 10} more)" : ""));
+                }
+
             }
 
             if (ci < companyList.Count - 1)

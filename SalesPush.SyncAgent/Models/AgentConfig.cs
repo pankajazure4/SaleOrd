@@ -12,15 +12,29 @@ public class AgentConfig
     public string ApiBaseUrl { get; set; } = "";
     public string ApiKeyProtected { get; set; } = "";
 
+    // "Authorization"/"Bearer" by default. Not every client's API agrees on
+    // that convention — e.g. Siena Bathroom wants a raw "X-Api-Key: <key>"
+    // header instead — so both are configurable per install rather than
+    // hardcoded. Leave AuthScheme blank to send the key as-is with no
+    // scheme prefix.
+    public string AuthHeaderName { get; set; } = "Authorization";
+    public string AuthScheme { get; set; } = "Bearer";
+
     public string TallyUrl { get; set; } = "http://localhost:9000";
 
-    public string SalesLedger { get; set; } = "Sales";
-    public string IGSTLedger { get; set; } = "IGST";
-    public string CGSTLedger { get; set; } = "CGST";
-    public string SGSTLedger { get; set; } = "SGST";
-    public string RoundOffLedger { get; set; } = "Round Off";
+    // Fallbacks only — the real values normally come from the API per
+    // invoice/item (SaleInvoice.CompanyName/VoucherType,
+    // SaleInvoiceItem.BatchName). Used when a client's API leaves one out,
+    // e.g. a single-company install with no per-order company field.
+    public string TallyCompanyName { get; set; } = "";
     public string VoucherType { get; set; } = "Sales";
     public string BatchName { get; set; } = "Primary Batch";
+    public string VoucherClass { get; set; } = "";
+
+    // Every pushed voucher is ISOPTIONAL=Yes by default — it lands in Tally
+    // without hitting the books until an accountant confirms it. Kept as a
+    // switch (not hardcoded) in case a client later wants regular vouchers.
+    public bool PushAsOptional { get; set; } = true;
 
     public int PushIntervalMinutes { get; set; } = 3;
 

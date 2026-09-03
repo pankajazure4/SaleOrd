@@ -63,7 +63,7 @@ public class DashboardController : Controller
         var recentOrders = await query
             .OrderByDescending(o => o.CreatedAt)
             .Take(10)
-            .Select(o => new { o.SaleOrderId, o.OrderNo, o.LedgerName, o.TotalAmount, o.Status, o.OrderDate, o.CreatedByName })
+            .Select(o => new { o.SaleOrderId, o.OrderNo, o.LedgerName, o.TotalAmount, o.Status, o.IsInvoiced, o.OrderDate, o.CreatedByName })
             .ToListAsync();
 
         ViewBag.Stats        = stats;
@@ -117,7 +117,7 @@ public class DashboardController : Controller
                 o.OrderNo,
                 o.LedgerName,
                 o.TotalAmount,
-                status = o.Status.ToString(),
+                status = o.Status == OrderStatus.Synced && o.IsInvoiced ? "Invoiced" : o.Status.ToString(),
                 orderDate = o.OrderDate.ToString("dd MMM")
             })
             .ToListAsync();

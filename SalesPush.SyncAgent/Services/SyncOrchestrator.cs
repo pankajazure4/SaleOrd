@@ -11,13 +11,17 @@ public class StatusEventArgs : EventArgs
     public DateTime? NextPushCycleAt { get; init; }
 }
 
-// Single push-cycle timer: load active companies from the Sales API, check
-// which of those are actually open in Tally right now, then for each one
-// pull its pending sales and push them in as Sales Invoice vouchers,
-// reporting each result back to the API. There's no master-sync job here
-// (unlike SaleOrd.SyncAgent) — this agent has no local database to mirror
-// Tally masters into, so ledger/stock-item names are just trusted verbatim
-// from whatever the API sends.
+// Single push-cycle timer: pull every pending sale from the Sales API in
+// one call, group them by their own CompanyName (falling back to
+// AgentConfig.TallyCompanyName for a client whose API has no per-order
+// company concept), then push each group into whichever of those companies
+// is actually open in Tally right now — same "only touch what's open"
+// safety guard SaleOrd.SyncAgent uses, just sourced from the pending-sales
+// data instead of a separate companies endpoint (this agent's API contract
+// has none). There's no master-sync job here either (unlike
+// SaleOrd.SyncAgent) — this agent has no local database to mirror Tally
+// masters into, so ledger/stock-item names are just trusted verbatim from
+// whatever the API sends.
 public class SyncOrchestrator
 {
     private readonly ApiDataService _api;
@@ -68,7 +72,7 @@ public class SyncOrchestrator
 
     public async Task<(bool Ok, string Message)> TestApiAsync(AgentConfig config)
     {
-        return await _api.TestConnectionAsync(config.ApiBaseUrl, ConfigService.Unprotect(config.ApiKeyProtected));
+        return await _api.TestConnectionAsync(config);
     }
 
     public async Task<(bool Ok, string Message)> TestTallyAsync(AgentConfig config)
@@ -111,11 +115,6 @@ public class SyncOrchestrator
 
     private async Task RunPushCycleAsync()
     {
-        var apiKey = ConfigService.Unprotect(_config.ApiKeyProtected);
-
-        _logger.Info("Push cycle: loading active companies from API...");
-        var allCompanies = await _api.GetActiveCompaniesAsync(_config.ApiBaseUrl, apiKey);
-
         _logger.Info("Push cycle: checking Tally status...");
         var (reachable, openInTally) = await _tally.CheckStatusAsync(_config.TallyUrl);
         if (!reachable)
@@ -124,54 +123,88 @@ public class SyncOrchestrator
             return;
         }
 
+        _logger.Info("Push cycle: loading pending sales from API...");
+        var pending = await _api.GetPendingSalesAsync(_config);
+        _logger.Info($"{pending.Count} pending sale(s) loaded.");
+
+        // Group by each invoice's own CompanyName — falls back to the
+        // configured TallyCompanyName for a client whose API has no
+        // per-order company field (a single-company install).
+        var groups = pending
+            .GroupBy(p => string.IsNullOrWhiteSpace(p.CompanyName) ? _config.TallyCompanyName : p.CompanyName)
+            .ToList();
+
         // Only touch companies that are actually open in Tally right now —
         // sending a push for a company that isn't the one currently loaded
         // either errors or hangs until the HTTP timeout, every cycle, for no
         // useful result. Same guard SaleOrd.SyncAgent uses.
-        var companies = allCompanies.Where(c => openInTally.Any(o =>
-            string.Equals(Norm(o), Norm(c.TallyCompanyName), StringComparison.OrdinalIgnoreCase))).ToList();
+        var openGroups = groups.Where(g => openInTally.Any(o =>
+            string.Equals(Norm(o), Norm(g.Key), StringComparison.OrdinalIgnoreCase))).ToList();
 
-        if (companies.Count == 0)
+        var skipped = groups.Count - openGroups.Count;
+        if (skipped > 0)
+            _logger.Warn($"{skipped} company/companies with pending sales are NOT currently open in Tally — skipped this cycle. Open: [{string.Join(", ", openInTally)}]");
+
+        if (openGroups.Count == 0)
         {
-            _logger.Warn($"Push cycle skipped — no mapped company currently open in Tally. Open: [{string.Join(", ", openInTally)}]");
+            LastPushCycleAt = DateTime.Now;
+            NextPushCycleAt = DateTime.Now.AddMinutes(_config.PushIntervalMinutes);
             return;
         }
 
         int pushed = 0, failed = 0;
 
-        for (int ci = 0; ci < companies.Count; ci++)
+        for (int gi = 0; gi < openGroups.Count; gi++)
         {
-            var company = companies[ci];
-            _logger.Info($"[{company.CompanyName}] Loading pending sales from API...");
-            var pending = await _api.GetPendingSalesAsync(_config.ApiBaseUrl, apiKey, company.CompanyId);
-            _logger.Info($"[{company.CompanyName}] {pending.Count} pending sale(s) loaded.");
+            var group = openGroups[gi];
+            var invoices = group.ToList();
+            _logger.Info($"[{group.Key}] Pushing {invoices.Count} sale(s)...");
 
-            for (int i = 0; i < pending.Count; i++)
+            for (int i = 0; i < invoices.Count; i++)
             {
-                var invoice = pending[i];
-                var isAlter = !string.IsNullOrEmpty(invoice.TallyVoucherNo);
-                _logger.Info($"[{company.CompanyName}] Pushing {invoice.InvoiceNo} ({(isAlter ? "Alter" : "Create")})...");
+                var invoice = invoices[i];
+                var voucherType = string.IsNullOrWhiteSpace(invoice.VoucherType) ? _config.VoucherType : invoice.VoucherType;
+
+                // Guard: if this invoice is already in Tally (matched on
+                // VoucherTypeName + Reference — see TallyService.
+                // VoucherExistsByReferenceAsync), don't push it again. This
+                // is what happens when a prior push actually succeeded but
+                // the API's own "mark as synced" callback failed, so
+                // pending-orders keeps handing back the same invoice —
+                // re-pushing would risk a duplicate voucher or a Tally
+                // exception. Report success again instead, so the API
+                // finally stops sending it.
+                if (await _tally.VoucherExistsByReferenceAsync(_config.TallyUrl, group.Key, voucherType, invoice.InvoiceNo))
+                {
+                    _logger.Warn($"[{group.Key}] {invoice.InvoiceNo} already exists in Tally (matched by Reference) — reporting success without re-pushing.");
+                    await _api.ReportPushResultAsync(_config, invoice, true, "Already present in Tally — not re-pushed.");
+                    pushed++;
+
+                    if (i < invoices.Count - 1)
+                        await Task.Delay(800);
+                    continue;
+                }
+
+                _logger.Info($"[{group.Key}] Pushing {invoice.InvoiceNo}...");
 
                 var (success, message) = await _tally.PushSalesInvoiceAsync(
-                    _config.TallyUrl, invoice, company.TallyCompanyName,
-                    _config.SalesLedger, _config.IGSTLedger, _config.CGSTLedger, _config.SGSTLedger,
-                    _config.RoundOffLedger, isAlter, _config.VoucherType, _config.BatchName);
+                    _config.TallyUrl, invoice, group.Key,
+                    _config.VoucherType, _config.BatchName, _config.VoucherClass, _config.PushAsOptional);
 
-                await _api.ReportPushResultAsync(_config.ApiBaseUrl, apiKey, invoice.SaleInvoiceId,
-                    success, success ? invoice.InvoiceNo : null, message);
+                await _api.ReportPushResultAsync(_config, invoice, success, message);
 
-                if (success) { pushed++; _logger.Info($"Pushed {invoice.InvoiceNo} -> Tally ({(isAlter ? "Alter" : "Create")})"); }
+                if (success) { pushed++; _logger.Info($"Pushed {invoice.InvoiceNo} -> Tally"); }
                 else { failed++; _logger.Warn($"Push failed for {invoice.InvoiceNo}: {message}"); }
 
                 // Rapid-fire pushes with no spacing crashed Tally's process
                 // with a memory access violation on a client install of
                 // SaleOrd.SyncAgent — pacing here defensively for the same
                 // reason.
-                if (i < pending.Count - 1)
+                if (i < invoices.Count - 1)
                     await Task.Delay(800);
             }
 
-            if (ci < companies.Count - 1)
+            if (gi < openGroups.Count - 1)
                 await Task.Delay(800);
         }
 

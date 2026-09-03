@@ -124,7 +124,7 @@ function loadOrders(page) {
             rows = '<tr><td colspan="6" class="text-center text-muted py-3">No orders found.</td></tr>';
         } else {
             d.orders.forEach(function(o) {
-                var sc = { Cancelled:'badge-cancelled', Pending:'badge-pending', Synced:'badge-synced', Error:'badge-error' }[o.status] || 'badge-cancelled';
+                var sc = { Cancelled:'badge-cancelled', Pending:'badge-pending', Synced:'badge-synced', Invoiced:'badge-invoiced', Error:'badge-error' }[o.status] || 'badge-cancelled';
                 rows += '<tr>' +
                     '<td class="small"><a href="/SaleOrder/Details/' + o.saleOrderId + '">' + esc(o.orderNo) + '</a></td>' +
                     '<td class="small">' + esc(o.orderDate) + '</td>' +

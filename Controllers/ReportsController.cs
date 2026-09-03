@@ -171,7 +171,7 @@ public class ReportsController : Controller
                 orderDate = o.OrderDate.ToString("dd MMM yy"),
                 o.LedgerName,
                 total     = o.GrandTotal > 0 ? o.GrandTotal : o.TotalAmount,
-                status    = o.Status.ToString(),
+                status    = o.Status == OrderStatus.Synced && o.IsInvoiced ? "Invoiced" : o.Status.ToString(),
                 o.IsInvoiced, o.TallyInvoiceNo
             })
             .ToListAsync();

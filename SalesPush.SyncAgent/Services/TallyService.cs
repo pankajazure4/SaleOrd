@@ -59,34 +59,111 @@ public class TallyService
         catch { return (false, new()); }
     }
 
+    // Guards against re-pushing a sale that's already in Tally — e.g. a
+    // prior cycle's push actually succeeded but the API's "mark as synced"
+    // callback failed (network blip, API-side error), so pending-orders
+    // keeps handing back the same invoice forever. Pushing it again risks
+    // a duplicate voucher or a Tally exception on the reused REMOTEID.
+    // Matched on VoucherTypeName + Reference (we always set REFERENCE =
+    // invoice.InvoiceNo — see PushSalesInvoiceAsync) rather than
+    // VoucherNumber, since VOUCHERNUMBER itself is left for Tally to
+    // auto-assign, not something we control. Ported from the same
+    // Collection/TDL "exists check" pattern LoheBgService uses, adapted to
+    // filter on Reference instead of VoucherNumber for that reason.
+    public async Task<bool> VoucherExistsByReferenceAsync(string tallyUrl, string companyName, string voucherTypeName, string reference)
+    {
+        if (string.IsNullOrWhiteSpace(reference)) return false;
+
+        var fetchXml = $@"<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>EXPORT</TALLYREQUEST>
+    <TYPE>COLLECTION</TYPE>
+    <ID>SalesPushVoucherExistsCheck</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        <SVCURRENTCOMPANY>{Escape(companyName)}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME=""SalesPushVoucherExistsCheck"" ISINITIALIZE=""Yes"">
+            <TYPE>Voucher</TYPE>
+            <FETCH>Date, VoucherNumber, VoucherTypeName, Reference, MasterId</FETCH>
+            <FILTERS>TypeFilter, ReferenceFilter</FILTERS>
+          </COLLECTION>
+          <SYSTEM TYPE=""Formulae"" NAME=""TypeFilter"">
+            $VoucherTypeName = ""{Escape(voucherTypeName)}""
+          </SYSTEM>
+          <SYSTEM TYPE=""Formulae"" NAME=""ReferenceFilter"">
+            $Reference = ""{Escape(reference)}""
+          </SYSTEM>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>";
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var content = new StringContent(fetchXml, Encoding.UTF8, "application/xml");
+            var response = await _http.PostAsync(tallyUrl, content, cts.Token);
+            // Inconclusive on any failure — never block a genuine push on a
+            // guess; only skip when Tally positively confirms the voucher
+            // is already there.
+            if (!response.IsSuccessStatusCode) return false;
+
+            var raw = await response.Content.ReadAsStringAsync();
+            var doc = XDocument.Parse(DeclareUdfNamespace(StripInvalidXmlChars(raw)));
+            return doc.Descendants("VOUCHER").Any();
+        }
+        catch { return false; }
+    }
+
     // Pushes one SaleInvoice into Tally as a Sales Invoice voucher (ISINVOICE
-    // = Yes, unlike SaleOrd.SyncAgent's Sales Order push). isAlter re-pushes
-    // an already-created voucher (e.g. the API sent a corrected version) as
-    // an ACTION="Alter" instead of "Create".
+    // = Yes, unlike SaleOrd.SyncAgent's Sales Order push). Always
+    // ACTION="Create" — this agent has no local record of what it already
+    // pushed (no local DB), and the contract has no notion of "this is a
+    // correction, Alter the existing voucher" yet. If a push fails partway
+    // (e.g. network drops after Tally already created the voucher but
+    // before we read the response), the next cycle will try to Create the
+    // same REMOTEID again — Tally's own duplicate-REMOTEID handling is what
+    // guards against that today; revisit if that turns out not to be enough
+    // once real usage/the voucher XML sample is in.
+    //
+    // Ledger/tax lines and item sales-ledger splits are entirely generic —
+    // built from invoice.LedgerEntries and item.AccountingAllocations
+    // rather than named fields, so nothing here is India/GST- or UAE/VAT-
+    // specific. The party/registration block was reconciled against two
+    // real exported "Sales AY TAX" (UAE VAT) vouchers — see field-by-field
+    // notes inline below.
     public async Task<(bool Success, string Message)> PushSalesInvoiceAsync(
         string tallyUrl, SaleInvoice invoice, string companyName,
-        string salesLedger    = "Sales",
-        string igstLedger     = "IGST",
-        string cgstLedger     = "CGST",
-        string sgstLedger     = "SGST",
-        string roundOffLedger = "Round Off",
-        bool   isAlter        = false,
-        string voucherType    = "Sales",
-        string batchName      = "Primary Batch")
+        string defaultVoucherType  = "Sales",
+        string defaultBatchName   = "Primary Batch",
+        string defaultVoucherClass = "",
+        bool   isOptional         = true)
     {
-        var action     = isAlter ? "Alter" : "Create";
-        var dateStr    = invoice.InvoiceDate.ToString("yyyyMMdd");
-        var grandTotal = invoice.GrandTotal > 0 ? invoice.GrandTotal : invoice.TotalAmount;
-        var narration  = string.IsNullOrWhiteSpace(invoice.Narration)
+        var dateStr     = invoice.InvoiceDate.ToString("yyyyMMdd");
+        var voucherType = string.IsNullOrWhiteSpace(invoice.VoucherType) ? defaultVoucherType : invoice.VoucherType;
+        var narration   = string.IsNullOrWhiteSpace(invoice.EnteredBy)
             ? $"Ref: {invoice.InvoiceNo}"
-            : $"Ref: {invoice.InvoiceNo} | {invoice.Narration}";
-        var remoteId   = $"salespush{invoice.SaleInvoiceId:D7}";
+            : $"Ref: {invoice.InvoiceNo} | Entered by {invoice.EnteredBy}";
+        var remoteId    = $"salespush{invoice.SaleInvoiceId:D7}";
 
         var itemsXml = new StringBuilder();
         foreach (var item in invoice.Items)
         {
-            var rateStr = $"{item.Rate:F2}/{item.UOM}";
-            var qtyStr  = $" {item.Qty:F3} {item.UOM}";
+            // 3 decimal places, not 2 — confirmed against real exports:
+            // every RATE/AMOUNT in both sample vouchers (and the original
+            // contract JSON) is 3-decimal ("6.400/Kg", "640.000"), not 2.
+            var rateStr    = $"{item.Rate:F3}/{item.Unit}";
+            var actualQty  = $" {item.ActualQty:F3} {item.Unit}";
+            var billedQty  = $" {item.BilledQty:F3} {item.Unit}";
+            var batchName  = string.IsNullOrWhiteSpace(item.BatchName) ? defaultBatchName : item.BatchName;
 
             var batchXml = string.Empty;
             if (!string.IsNullOrWhiteSpace(item.GodownName))
@@ -95,32 +172,27 @@ public class TallyService
               <BATCHALLOCATIONS.LIST>
                 <GODOWNNAME>{Escape(item.GodownName)}</GODOWNNAME>
                 <BATCHNAME>{Escape(batchName)}</BATCHNAME>
-                <AMOUNT>{item.Amount:F2}</AMOUNT>
-                <ACTUALQTY>{qtyStr}</ACTUALQTY>
-                <BILLEDQTY>{qtyStr}</BILLEDQTY>
+                <DESTINATIONGODOWNNAME>{Escape(item.GodownName)}</DESTINATIONGODOWNNAME>
+                <AMOUNT>{item.Amount:F3}</AMOUNT>
+                <ACTUALQTY>{actualQty}</ACTUALQTY>
+                <BILLEDQTY>{billedQty}</BILLEDQTY>
                 <ADDITIONALDETAILS.LIST></ADDITIONALDETAILS.LIST>
                 <VOUCHERCOMPONENTLIST.LIST></VOUCHERCOMPONENTLIST.LIST>
               </BATCHALLOCATIONS.LIST>";
             }
 
-            itemsXml.Append($@"
-            <ALLINVENTORYENTRIES.LIST>
-              <STOCKITEMNAME>{Escape(item.ItemName)}</STOCKITEMNAME>
-              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
-              <RATE>{rateStr}</RATE>
-              <DISCOUNT>{item.Discount:F2}</DISCOUNT>
-              <AMOUNT>{item.Amount:F2}</AMOUNT>
-              <ACTUALQTY>{qtyStr}</ACTUALQTY>
-              <BILLEDQTY>{qtyStr}</BILLEDQTY>
-              {batchXml}
+            var allocationsXml = new StringBuilder();
+            foreach (var alloc in item.AccountingAllocations)
+            {
+                allocationsXml.Append($@"
               <ACCOUNTINGALLOCATIONS.LIST>
-                <LEDGERNAME>{Escape(salesLedger)}</LEDGERNAME>
+                <LEDGERNAME>{Escape(alloc.LedgerName)}</LEDGERNAME>
                 <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
                 <LEDGERFROMITEM>No</LEDGERFROMITEM>
                 <REMOVEZEROENTRIES>No</REMOVEZEROENTRIES>
                 <ISPARTYLEDGER>No</ISPARTYLEDGER>
                 <GSTOVERRIDDEN>No</GSTOVERRIDDEN>
-                <AMOUNT>{item.Amount:F2}</AMOUNT>
+                <AMOUNT>{alloc.Amount:F3}</AMOUNT>
                 <SERVICETATXDETAILS.LIST></SERVICETATXDETAILS.LIST>
                 <CATEGORYALLOCATIONS.LIST></CATEGORYALLOCATIONS.LIST>
                 <BANKALLOCATION.LIST></BANKALLOCATION.LIST>
@@ -135,7 +207,19 @@ public class TallyService
                 <REFVOUCHERDETAILS.LIST></REFVOUCHERDETAILS.LIST>
                 <INVOICEWISEDETAILS.LIST></INVOICEWISEDETAILS.LIST>
                 <TAXTYPEALLOCATIONS.LIST></TAXTYPEALLOCATIONS.LIST>
-              </ACCOUNTINGALLOCATIONS.LIST>
+              </ACCOUNTINGALLOCATIONS.LIST>");
+            }
+
+            itemsXml.Append($@"
+            <ALLINVENTORYENTRIES.LIST>
+              <STOCKITEMNAME>{Escape(item.StockItemName)}</STOCKITEMNAME>
+              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+              <RATE>{rateStr}</RATE>
+              <AMOUNT>{item.Amount:F3}</AMOUNT>
+              <ACTUALQTY>{actualQty}</ACTUALQTY>
+              <BILLEDQTY>{billedQty}</BILLEDQTY>
+              {batchXml}
+              {allocationsXml}
               <DUTYHEADDETAILS.LIST></DUTYHEADDETAILS.LIST>
               <RATEDETAILS.LIST></RATEDETAILS.LIST>
               <SUPPLEMENTARYDUTYHEADDETAILS.LIST></SUPPLEMENTARYDUTYHEADDETAILS.LIST>
@@ -146,8 +230,31 @@ public class TallyService
             </ALLINVENTORYENTRIES.LIST>");
         }
 
-        var ledgersXml = new StringBuilder();
+        // Party's own balancing entry — the only amount we compute
+        // ourselves, plain addition to satisfy Tally's debit=credit
+        // requirement (never a tax/rate calculation): -(sum of item
+        // amounts + sum of voucher-level ledgerEntries amounts).
+        var partyAmount = invoice.Items.Sum(i => i.Amount) + invoice.LedgerEntries.Sum(l => l.Amount);
 
+        // Bill-wise reference on the party's own entry — confirmed present
+        // on every real voucher sampled, registered and cash-sale party
+        // alike, so treated as always-required rather than optional.
+        // NAME uses our own InvoiceNo (not Tally's auto-assigned
+        // VOUCHERNUMBER, which we can't know ahead of a Create) — that's a
+        // deliberate choice, not yet double-checked against how this
+        // client wants bill-wise/aging reports to read; flag if that's
+        // wrong once real usage shows it.
+        var billAllocXml = $@"
+              <BILLALLOCATIONS.LIST>
+                <NAME>{Escape(invoice.InvoiceNo)}</NAME>
+                <BILLTYPE>New Ref</BILLTYPE>
+                <TDSDEDUCTEEISSPECIALRATE>No</TDSDEDUCTEEISSPECIALRATE>
+                <AMOUNT>-{partyAmount:F3}</AMOUNT>
+                <INTERESTCOLLECTION.LIST></INTERESTCOLLECTION.LIST>
+                <STBILLCATEGORIES.LIST></STBILLCATEGORIES.LIST>
+              </BILLALLOCATIONS.LIST>";
+
+        var ledgersXml = new StringBuilder();
         ledgersXml.Append($@"
             <LEDGERENTRIES.LIST>
               <OLDAUDITENTRYIDS.LIST TYPE=""Number""><OLDAUDITENTRYIDS>-1</OLDAUDITENTRYIDS></OLDAUDITENTRYIDS.LIST>
@@ -158,10 +265,10 @@ public class TallyService
               <ISPARTYLEDGER>Yes</ISPARTYLEDGER>
               <GSTOVERRIDDEN>No</GSTOVERRIDDEN>
               <ISLASTDEEMEDPOSITIVE>Yes</ISLASTDEEMEDPOSITIVE>
-              <AMOUNT>-{grandTotal:F2}</AMOUNT>
+              <AMOUNT>-{partyAmount:F3}</AMOUNT>
               <SERVICETATXDETAILS.LIST></SERVICETATXDETAILS.LIST>
               <BANKALLOCATION.LIST></BANKALLOCATION.LIST>
-              <BILLALLOCATIONS.LIST></BILLALLOCATIONS.LIST>
+              {billAllocXml}
               <INTERESTCOLLECTION.LIST></INTERESTCOLLECTION.LIST>
               <OLDAUDITENTRIES.LIST></OLDAUDITENTRIES.LIST>
               <ACCOUNTAUDITENTRIES.LIST></ACCOUNTAUDITENTRIES.LIST>
@@ -174,50 +281,38 @@ public class TallyService
               <TAXTYPEALLOCATIONS.LIST></TAXTYPEALLOCATIONS.LIST>
             </LEDGERENTRIES.LIST>");
 
-        if (invoice.TaxType == "IGST" && invoice.IGSTTotal > 0)
-        {
-            ledgersXml.Append(TaxLedgerEntry(igstLedger, invoice.IGSTTotal));
-        }
-        else if (invoice.TaxType == "CGST_SGST")
-        {
-            if (invoice.CGSTTotal > 0) ledgersXml.Append(TaxLedgerEntry(cgstLedger, invoice.CGSTTotal));
-            if (invoice.SGSTTotal > 0) ledgersXml.Append(TaxLedgerEntry(sgstLedger, invoice.SGSTTotal));
-        }
+        // Every other ledgerEntries line (VAT, discount, freight, round-off,
+        // whatever the client's API decided applies) — generic, no line
+        // "type" to special-case. Sign convention mirrors the party entry
+        // above: a positive amount is a credit line (ISDEEMEDPOSITIVE=No,
+        // added to what the party owes — e.g. VAT payable); a negative
+        // amount (e.g. a discount) is a debit line (ISDEEMEDPOSITIVE=Yes).
+        foreach (var entry in invoice.LedgerEntries)
+            ledgersXml.Append(GenericLedgerEntry(entry.LedgerName, entry.Amount));
 
-        if (invoice.RoundOff != 0)
-        {
-            ledgersXml.Append($@"
-            <LEDGERENTRIES.LIST>
-              <OLDAUDITENTRYIDS.LIST TYPE=""Number""><OLDAUDITENTRYIDS>-1</OLDAUDITENTRYIDS></OLDAUDITENTRYIDS.LIST>
-              <ROUNDTYPE>Normal Rounding</ROUNDTYPE>
-              <LEDGERNAME>{Escape(roundOffLedger)}</LEDGERNAME>
-              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
-              <LEDGERFROMITEM>No</LEDGERFROMITEM>
-              <REMOVEZEROENTRIES>No</REMOVEZEROENTRIES>
-              <ISPARTYLEDGER>No</ISPARTYLEDGER>
-              <GSTOVERRIDDEN>No</GSTOVERRIDDEN>
-              <ROUNDLIMIT> 1</ROUNDLIMIT>
-              <AMOUNT>{invoice.RoundOff:F2}</AMOUNT>
-              <VATEXPAMOUNT>{invoice.RoundOff:F2}</VATEXPAMOUNT>
-              <SERVICETATXDETAILS.LIST></SERVICETATXDETAILS.LIST>
-              <BANKALLOCATION.LIST></BANKALLOCATION.LIST>
-              <BILLALLOCATIONS.LIST></BILLALLOCATIONS.LIST>
-              <INTERESTCOLLECTION.LIST></INTERESTCOLLECTION.LIST>
-              <OLDAUDITENTRIES.LIST></OLDAUDITENTRIES.LIST>
-              <ACCOUNTAUDITENTRIES.LIST></ACCOUNTAUDITENTRIES.LIST>
-              <AUDITENTRIES.LIST></AUDITENTRIES.LIST>
-              <INPUTCRALOCS.LIST></INPUTCRALOCS.LIST>
-              <DUTYHEADDETAILS.LIST></DUTYHEADDETAILS.LIST>
-              <RATEDETAILS.LIST></RATEDETAILS.LIST>
-              <REFVOUCHERDETAILS.LIST></REFVOUCHERDETAILS.LIST>
-              <INVOICEWISEDETAILS.LIST></INVOICEWISEDETAILS.LIST>
-              <TAXTYPEALLOCATIONS.LIST></TAXTYPEALLOCATIONS.LIST>
-            </LEDGERENTRIES.LIST>");
-        }
+        var partyTrn      = invoice.PartyTRN?.Trim() ?? "";
+        var partyState    = invoice.PartyState?.Trim() ?? "";
+        var partyCountry  = invoice.PartyCountry?.Trim() ?? "";
+        var voucherClass  = string.IsNullOrWhiteSpace(invoice.VoucherClass) ? defaultVoucherClass : invoice.VoucherClass;
 
-        var partyGstin  = invoice.PartyGSTNo?.Trim() ?? "";
-        var partyState  = invoice.PartyState?.Trim() ?? "";
-        var partyCreditPeriod = invoice.PartyCreditPeriod?.Trim() ?? "";
+        // Reconciled against two real exported "Sales AY TAX" vouchers —
+        // this UAE VAT localisation does NOT use PARTYGSTIN/CONSIGNEEGSTIN
+        // (an India/GST-only pair, never present in either sample) or a
+        // state-level PLACEOFSUPPLY. The TRN instead goes into
+        // TRADERCONSVATTINNO + BASICBUYERSSALESTAXNO (both hold the same
+        // value in every sample), and PLACEOFSUPPLYCOUNTRY (not
+        // PLACEOFSUPPLY) carries the country. GSTREGISTRATIONTYPE and
+        // VATDEALERTYPE values below are copied verbatim from what real
+        // registered vs. unregistered/cash-sale parties actually show.
+        // PartyEmirate still isn't mapped anywhere — every sample shows
+        // EMIRATEPOS as an unset "Not Applicable" placeholder even for a
+        // Dubai party with PartyState=PartyEmirate="Dubai", so state
+        // appears to be what actually drives location and Emirate is left
+        // unused pending evidence otherwise.
+        var hasTrn = !string.IsNullOrEmpty(partyTrn);
+        var gstRegistrationType = hasTrn ? "Unknown" : "Unregistered/Consumer";
+        var vatDealerType       = hasTrn ? "Regular"  : "Unregistered";
+
         var partyAddressLines = (invoice.PartyAddress ?? "")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var addressXml = partyAddressLines.Length == 0 ? "" : $@"
@@ -227,8 +322,6 @@ public class TallyService
             <BASICBUYERADDRESS.LIST TYPE=""String"">{string.Concat(partyAddressLines.Select(a => $@"
               <BASICBUYERADDRESS>{Escape(a)}</BASICBUYERADDRESS>"))}
             </BASICBUYERADDRESS.LIST>";
-        var gstRegistrationType = string.IsNullOrEmpty(partyGstin) ? "Unregistered" : "Regular";
-        var hasDiscounts = invoice.Items.Any(i => i.Discount > 0) ? "Yes" : "No";
 
         var xml = $@"<ENVELOPE>
   <HEADER>
@@ -244,29 +337,32 @@ public class TallyService
       </REQUESTDESC>
       <REQUESTDATA>
         <TALLYMESSAGE xmlns:UDF=""TallyUDF"">
-          <VOUCHER REMOTEID=""{remoteId}"" VCHTYPE=""{Escape(voucherType)}"" ACTION=""{action}"" OBJVIEW=""Invoice Voucher View"">{addressXml}
+          <VOUCHER REMOTEID=""{remoteId}"" VCHTYPE=""{Escape(voucherType)}"" ACTION=""Create"" OBJVIEW=""Invoice Voucher View"">{addressXml}
             <DATE>{dateStr}</DATE>
             <EFFECTIVEDATE>{dateStr}</EFFECTIVEDATE>
             <NARRATION>{Escape(narration)}</NARRATION>
-            <OBJECTUPDATEACTION>{action}</OBJECTUPDATEACTION>
-            <COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE>
-            {(string.IsNullOrEmpty(partyGstin) ? "" : $"<PARTYGSTIN>{Escape(partyGstin)}</PARTYGSTIN>")}
-            {(string.IsNullOrEmpty(partyState) ? "" : $@"<STATENAME>{Escape(partyState)}</STATENAME>
-            <PLACEOFSUPPLY>{Escape(partyState)}</PLACEOFSUPPLY>")}
+            <OBJECTUPDATEACTION>Create</OBJECTUPDATEACTION>
+            {(string.IsNullOrEmpty(partyCountry) ? "" : $"<COUNTRYOFRESIDENCE>{Escape(partyCountry)}</COUNTRYOFRESIDENCE>")}
             <GSTREGISTRATIONTYPE>{gstRegistrationType}</GSTREGISTRATIONTYPE>
-            <CONSIGNEECOUNTRYNAME>India</CONSIGNEECOUNTRYNAME>
-            {(string.IsNullOrEmpty(partyGstin) ? "" : $"<CONSIGNEEGSTIN>{Escape(partyGstin)}</CONSIGNEEGSTIN>")}
+            <VATDEALERTYPE>{vatDealerType}</VATDEALERTYPE>
+            {(string.IsNullOrEmpty(partyState) ? "" : $"<STATENAME>{Escape(partyState)}</STATENAME>")}
+            {(string.IsNullOrEmpty(partyTrn) ? "" : $@"<TRADERCONSVATTINNO>{Escape(partyTrn)}</TRADERCONSVATTINNO>
+            <BASICBUYERSSALESTAXNO>{Escape(partyTrn)}</BASICBUYERSSALESTAXNO>")}
+            {(string.IsNullOrEmpty(partyCountry) ? "" : $"<PLACEOFSUPPLYCOUNTRY>{Escape(partyCountry)}</PLACEOFSUPPLYCOUNTRY>")}
+            {(string.IsNullOrEmpty(partyCountry) ? "" : $"<CONSIGNEECOUNTRYNAME>{Escape(partyCountry)}</CONSIGNEECOUNTRYNAME>")}
             {(string.IsNullOrEmpty(partyState) ? "" : $"<CONSIGNEESTATENAME>{Escape(partyState)}</CONSIGNEESTATENAME>")}
-            {(string.IsNullOrEmpty(partyCreditPeriod) ? "" : $"<TERMSOFPAYMENT>{Escape(partyCreditPeriod)}</TERMSOFPAYMENT>")}
             <VOUCHERTYPENAME>{Escape(voucherType)}</VOUCHERTYPENAME>
+            {(string.IsNullOrEmpty(voucherClass) ? "" : $"<CLASSNAME>{Escape(voucherClass)}</CLASSNAME>")}
             <PARTYNAME>{Escape(invoice.PartyLedgerName)}</PARTYNAME>
             <PARTYLEDGERNAME>{Escape(invoice.PartyLedgerName)}</PARTYLEDGERNAME>
             <PARTYMAILINGNAME>{Escape(invoice.PartyLedgerName)}</PARTYMAILINGNAME>
             <BASICBUYERNAME>{Escape(invoice.PartyLedgerName)}</BASICBUYERNAME>
             <REFERENCE>{Escape(invoice.InvoiceNo)}</REFERENCE>
             <ISINVOICE>Yes</ISINVOICE>
-            <ISOPTIONAL>No</ISOPTIONAL>
-            <HASDISCOUNTS>{hasDiscounts}</HASDISCOUNTS>
+            <ISOPTIONAL>{(isOptional ? "Yes" : "No")}</ISOPTIONAL>
+            <HASDISCOUNTS>No</HASDISCOUNTS>
+            {string.Concat(invoice.Udf.Select(kv => $@"
+            <UDF:{kv.Key}>{Escape(kv.Value)}</UDF:{kv.Key}>"))}
             {itemsXml}
             {ledgersXml}
             <CONTRITRANS.LIST></CONTRITRANS.LIST>
@@ -292,17 +388,17 @@ public class TallyService
         return (false, raw[..Math.Min(300, raw.Length)]);
     }
 
-    private static string TaxLedgerEntry(string ledgerName, decimal amount) => $@"
+    private static string GenericLedgerEntry(string ledgerName, decimal amount) => $@"
             <LEDGERENTRIES.LIST>
               <OLDAUDITENTRYIDS.LIST TYPE=""Number""><OLDAUDITENTRYIDS>-1</OLDAUDITENTRYIDS></OLDAUDITENTRYIDS.LIST>
               <LEDGERNAME>{Escape(ledgerName)}</LEDGERNAME>
-              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+              <ISDEEMEDPOSITIVE>{(amount >= 0 ? "No" : "Yes")}</ISDEEMEDPOSITIVE>
               <LEDGERFROMITEM>No</LEDGERFROMITEM>
               <REMOVEZEROENTRIES>No</REMOVEZEROENTRIES>
               <ISPARTYLEDGER>No</ISPARTYLEDGER>
               <GSTOVERRIDDEN>No</GSTOVERRIDDEN>
-              <AMOUNT>{amount:F2}</AMOUNT>
-              <VATEXPAMOUNT>{amount:F2}</VATEXPAMOUNT>
+              <AMOUNT>{amount:F3}</AMOUNT>
+              <VATEXPAMOUNT>{amount:F3}</VATEXPAMOUNT>
               <SERVICETATXDETAILS.LIST></SERVICETATXDETAILS.LIST>
               <BANKALLOCATION.LIST></BANKALLOCATION.LIST>
               <BILLALLOCATIONS.LIST></BILLALLOCATIONS.LIST>

@@ -13,12 +13,17 @@
 }
 
 @{
-    string statusClass = Model.Status.ToString() switch
+    // A Synced order that's since been invoiced in Tally reads as
+    // "Invoiced", not "Synced" — same rule as the order list/dashboard.
+    string statusLabel = Model.Status == SaleOrd.Models.Domain.OrderStatus.Synced && Model.IsInvoiced
+        ? "Invoiced" : Model.Status.ToString();
+    string statusClass = statusLabel switch
     {
-        "Pending" => "warning",
-        "Synced"  => "success",
-        "Error"   => "danger",
-        _         => "secondary"
+        "Pending"  => "warning",
+        "Synced"   => "success",
+        "Invoiced" => "primary",
+        "Error"    => "danger",
+        _          => "secondary"
     };
 }
 
@@ -31,7 +36,7 @@
         </div>
     </div>
     <div class="d-flex gap-2 align-items-center">
-        <span class="badge bg-@statusClass">@Model.Status</span>
+        <span class="badge bg-@statusClass">@statusLabel</span>
         @if ((bool)ViewBag.CanPrint)
         {
             <a href="/SaleOrder/Print/@Model.SaleOrderId" target="_blank" class="btn btn-sm btn-outline-secondary no-print" title="Print">

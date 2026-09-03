@@ -253,8 +253,16 @@ public class TallyService
                 UOM             = el.Element("BASEUNITS")?.Value?.Trim() ?? string.Empty,
                 AdditionalUnits = el.Element("ADDITIONALUNITS")?.Value?.Trim(),
                 RateOfDuty      = ParseDecimal(el.Element("RATEOFDUTY")?.Value),
-                OpeningBalance  = ParseDecimal(el.Element("OPENINGBALANCE")?.Value),
-                ClosingBalance  = ParseDecimal(el.Element("CLOSINGBALANCE")?.Value),
+                // OPENINGBALANCE/CLOSINGBALANCE are "Quantity"-typed Tally
+                // fields — the raw value always carries a UOM suffix (e.g.
+                // "6 Cans"), which ParseDecimal's plain decimal.TryParse
+                // can't handle and was silently returning 0 for. ParseQty
+                // (leading-number regex, already used for order/voucher
+                // quantities elsewhere) strips the UOM correctly. Confirmed
+                // against a real client's Tally via Postman — CLOSINGBALANCE
+                // was reading 0 in SQL for every stock item until this fix.
+                OpeningBalance  = ParseQty(el.Element("OPENINGBALANCE")?.Value),
+                ClosingBalance  = ParseQty(el.Element("CLOSINGBALANCE")?.Value),
                 OpeningValue    = ParseDecimal(el.Element("OPENINGVALUE")?.Value),
                 ClosingValue    = ParseDecimal(el.Element("CLOSINGVALUE")?.Value),
                 IsBatchwiseOn   = el.Element("ISBATCHWISEON")?.Value == "Yes",
@@ -868,17 +876,29 @@ public class TallyService
     // of sales history that was enough to crash Tally's native HTTP engine
     // outright (STATUS_ACCESS_VIOLATION / c0000005). Bounding by date and
     // fetching once per company per cycle fixes both the crash and the
-    // wasted repeated full-history scans. See REFERENCE's comment further
-    // down for why that flat field is matched ahead of the nested
-    // INVOICEORDERLIST.LIST.
+    // wasted repeated full-history scans.
+    //
+    // ORDERNO comes from AllInventoryEntries.List:BatchAllocations.List:OrderNo,
+    // NOT InvoiceOrderList.List:BasicPurchaseOrderNo — confirmed by testing
+    // both directly against this client's Tally via Postman. A full voucher
+    // export shows genuine order-linked data in InvoiceOrderList.List, but a
+    // COLLECTION+FETCH query (what this method sends) always comes back with
+    // that list empty regardless — Tally just doesn't expand it that way
+    // through this mechanism. REFERENCE (the flat field) was also confirmed
+    // empty on real invoices at this client, despite Tally's own reports
+    // (Sales Register) displaying "Ref: SO-xxx dt. ..." — that's a UI-
+    // synthesized display from the order link, not a real REFERENCE value.
+    // BatchAllocations.List:OrderNo uses the exact nested-list FETCH pattern
+    // already proven working for GetVoucherInventoryAsync's
+    // BatchAllocations.List:GodownName, and a live test confirmed it comes
+    // through with the real order number intact. REFERENCE is still kept as
+    // an extra fallback source (cheap, might help other Tally installs that
+    // do populate it) even though it's a dead end at this specific client.
     //
     // No EXPLODEVCHTYPE: comparing against LoheBgService (a reference project
     // that reliably imports/reads 200-300 Tally records per run without ever
     // crashing Tally) showed its only EXPORT query is a single exact-name-
-    // filtered ledger lookup, never a bulk voucher scan with that flag. Both
-    // REFERENCE and INVOICEORDERLIST.LIST are generic Voucher fields present
-    // regardless of voucher-type class, so full type-hierarchy resolution
-    // was unnecessary overhead here, not a requirement.
+    // filtered ledger lookup, never a bulk voucher scan with that flag.
     public async Task<List<InvoiceLookupRecord>> GetRecentSalesInvoicesAsync(
         string tallyUrl, string companyName, DateTime fromDate, List<string> salesVoucherTypeNames)
     {
@@ -904,7 +924,7 @@ public class TallyService
       <COLLECTION NAME=""InvCheck"" ISINITIALIZE=""Yes"">
         <TYPE>Voucher</TYPE>
         <FILTER>IsSales</FILTER>
-        <FETCH>VoucherNumber,Date,VoucherTypeName,Reference,InvoiceOrderList.List:BasicPurchaseOrderNo</FETCH>
+        <FETCH>VoucherNumber,Date,VoucherTypeName,Reference,AllInventoryEntries.List:BatchAllocations.List:OrderNo</FETCH>
       </COLLECTION>
       <SYSTEM TYPE=""Formulae"" NAME=""IsSales"">{Escape(typeMatch)}</SYSTEM>
     </TDLMESSAGE></TDL>
@@ -917,14 +937,11 @@ public class TallyService
         var results = new List<InvoiceLookupRecord>();
         foreach (var vch in doc.Descendants("VOUCHER"))
         {
-            // REFERENCE (flat field, Tally auto-fills it with the order number
-            // when an invoice is raised "against" an order) fetches reliably;
-            // INVOICEORDERLIST.LIST (nested list) is kept only as a fallback.
             var reference = vch.Element("REFERENCE")?.Value?.Trim();
-            var orderRefs = vch.Descendants("INVOICEORDERLIST.LIST")
-                .Select(ol => ol.Element("BASICPURCHASEORDERNO")?.Value?.Trim())
+            var orderRefs = vch.Descendants("BATCHALLOCATIONS.LIST")
+                .Select(b => b.Element("ORDERNO")?.Value?.Trim())
                 .Append(reference)
-                .Where(o => !string.IsNullOrWhiteSpace(o))
+                .Where(o => !string.IsNullOrWhiteSpace(o) && !string.Equals(o, "Not Applicable", StringComparison.OrdinalIgnoreCase))
                 .Select(o => o!)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();

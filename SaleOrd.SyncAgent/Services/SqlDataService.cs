@@ -597,14 +597,26 @@ public class SqlDataService
             });
     }
 
-    public async Task<List<SaleOrder>> GetUninvoicedSyncedOrdersAsync(string connString, int companyId, int take = 50)
+    // No TOP/limit here on purpose — this used to be "TOP 50, ORDER BY
+    // SaleOrderId" with no rotation, which meant every cycle re-checked the
+    // SAME oldest 50 uninvoiced orders. If any of those never actually match
+    // (old test data, a genuinely un-invoiced order that's just sitting),
+    // the queue never advances — confirmed on a real client where nothing
+    // past a specific date ever got checked at all, because the oldest 50
+    // permanently occupied every cycle's whole batch. Fetching everyone
+    // doesn't widen the Tally query's date range either — that's already
+    // anchored to the oldest uninvoiced order's date regardless of how many
+    // orders are in this list (see RunOrderCycleAsync's fromDate), so this
+    // is free: same one Tally round-trip, just matched against the full set
+    // instead of an arbitrary 50-row slice of it.
+    public async Task<List<SaleOrder>> GetUninvoicedSyncedOrdersAsync(string connString, int companyId)
     {
         using var conn = new SqlConnection(connString);
         await conn.OpenAsync();
         var rows = await conn.QueryAsync<SaleOrder>(
-            "SELECT TOP (@Take) * FROM SaleOrders WHERE CompanyId = @CompanyId AND Status = 2 AND IsInvoiced = 0 " +
+            "SELECT * FROM SaleOrders WHERE CompanyId = @CompanyId AND Status = 2 AND IsInvoiced = 0 " +
             "ORDER BY SaleOrderId",
-            new { Take = take, CompanyId = companyId });
+            new { CompanyId = companyId });
         return rows.ToList();
     }
 

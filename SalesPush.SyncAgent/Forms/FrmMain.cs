@@ -28,14 +28,14 @@ public class FrmMain : Form
     // Config tab controls
     private TextBox _txtApiBaseUrl = new();
     private TextBox _txtApiKey = new();
+    private TextBox _txtAuthHeaderName = new();
+    private TextBox _txtAuthScheme = new();
     private TextBox _txtTallyUrl = new();
-    private TextBox _txtSalesLedger = new();
-    private TextBox _txtIgstLedger = new();
-    private TextBox _txtCgstLedger = new();
-    private TextBox _txtSgstLedger = new();
-    private TextBox _txtRoundOffLedger = new();
     private TextBox _txtVoucherType = new();
     private TextBox _txtBatchName = new();
+    private TextBox _txtVoucherClass = new();
+    private TextBox _txtTallyCompanyName = new();
+    private CheckBox _chkPushAsOptional = new();
     private NumericUpDown _numPushInterval = new();
     private CheckBox _chkStartMinimized = new();
     private CheckBox _chkAutoStart = new();
@@ -332,34 +332,63 @@ public class FrmMain : Form
         AddField(apiGrid, "Base URL", _txtApiBaseUrl);
         _txtApiKey.UseSystemPasswordChar = true;
         AddField(apiGrid, "API key", _txtApiKey);
+        _txtAuthHeaderName.Text = "Authorization";
+        AddField(apiGrid, "Auth header", _txtAuthHeaderName);
+        _txtAuthScheme.Text = "Bearer";
+        AddField(apiGrid, "Auth scheme", _txtAuthScheme);
+        var lblAuthHint = new Label
+        {
+            Text = "E.g. \"Authorization\" + \"Bearer\" (default), or \"X-Api-Key\" with scheme left blank.",
+            AutoSize = true,
+            ForeColor = UiTheme.TextMuted,
+            Font = new Font("Segoe UI", 8f)
+        };
+        var rAuth = apiGrid.RowCount;
+        apiGrid.RowCount = rAuth + 1;
+        apiGrid.Controls.Add(lblAuthHint, 1, rAuth);
 
         // Tally Connection
         var tallyGrid = MakeFieldGrid();
         AddField(tallyGrid, "Tally URL", _txtTallyUrl);
 
-        // Ledger Mapping (its own 4-column sub-grid: label,field,label,field)
-        var ledgerGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, AutoSize = true };
-        ledgerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
-        ledgerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        ledgerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
-        ledgerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        void AddLedgerPair(string l1, Control c1, string l2, Control c2)
+        // Fallback defaults (its own 4-column sub-grid: label,field,label,field)
+        // — the real values normally come from the API per invoice/item; these
+        // only fill in when a client's API leaves one out.
+        var fallbackGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, AutoSize = true };
+        fallbackGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+        fallbackGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        fallbackGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+        fallbackGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        void AddFallbackPair(string l1, Control c1, string l2, Control c2)
         {
-            var r = ledgerGrid.RowCount;
-            ledgerGrid.RowCount = r + 1;
+            var r = fallbackGrid.RowCount;
+            fallbackGrid.RowCount = r + 1;
             foreach (var c in new[] { c1, c2 })
             {
                 if (c is TextBox tb) { tb.Width = 190; tb.BorderStyle = BorderStyle.FixedSingle; tb.Anchor = AnchorStyles.Left; tb.Margin = new Padding(0, 4, 8, 4); }
             }
-            ledgerGrid.Controls.Add(new Label { Text = l1, AutoSize = true, Anchor = AnchorStyles.Left }, 0, r);
-            ledgerGrid.Controls.Add(c1, 1, r);
-            ledgerGrid.Controls.Add(new Label { Text = l2, AutoSize = true, Anchor = AnchorStyles.Left }, 2, r);
-            ledgerGrid.Controls.Add(c2, 3, r);
+            fallbackGrid.Controls.Add(new Label { Text = l1, AutoSize = true, Anchor = AnchorStyles.Left }, 0, r);
+            fallbackGrid.Controls.Add(c1, 1, r);
+            fallbackGrid.Controls.Add(new Label { Text = l2, AutoSize = true, Anchor = AnchorStyles.Left }, 2, r);
+            fallbackGrid.Controls.Add(c2, 3, r);
         }
-        AddLedgerPair("Sales", _txtSalesLedger, "IGST", _txtIgstLedger);
-        AddLedgerPair("CGST", _txtCgstLedger, "SGST", _txtSgstLedger);
-        AddLedgerPair("Round off", _txtRoundOffLedger, "Voucher type", _txtVoucherType);
-        AddLedgerPair("Batch name", _txtBatchName, "", new Label());
+        AddFallbackPair("Voucher type", _txtVoucherType, "Batch name", _txtBatchName);
+        AddFallbackPair("Voucher class", _txtVoucherClass, "Company", _txtTallyCompanyName);
+        var rOptional = fallbackGrid.RowCount;
+        fallbackGrid.RowCount = rOptional + 1;
+        fallbackGrid.Controls.Add(new Label { Text = "Push as Optional", AutoSize = true, Anchor = AnchorStyles.Left }, 0, rOptional);
+        fallbackGrid.Controls.Add(_chkPushAsOptional, 1, rOptional);
+        var lblFallbackNote = new Label
+        {
+            Text = "Ledger names, tax lines and company now come from the API per invoice — these only apply when it omits one.",
+            AutoSize = true,
+            ForeColor = UiTheme.TextMuted,
+            Font = new Font("Segoe UI", 8f)
+        };
+        var rFallback = fallbackGrid.RowCount;
+        fallbackGrid.RowCount = rFallback + 1;
+        fallbackGrid.Controls.Add(lblFallbackNote, 0, rFallback);
+        fallbackGrid.SetColumnSpan(lblFallbackNote, 4);
 
         // Schedule & Startup
         var schedGrid = MakeFieldGrid();
@@ -430,7 +459,7 @@ public class FrmMain : Form
 
         var gbApi = MakeGroupBox("🌐  Sales API", apiGrid);
         var gbTally = MakeGroupBox("📇  Tally Connection", tallyGrid);
-        var gbLedger = MakeGroupBox("🧾  Ledger Mapping", ledgerGrid);
+        var gbFallback = MakeGroupBox("🧾  Fallback Defaults", fallbackGrid);
         var gbSched = MakeGroupBox("🕐  Schedule && Startup", schedGrid);
         var gbLicense = MakeGroupBox("🔑  License", licenseGrid);
         gbLicense.ForeColor = UiTheme.Warning;
@@ -440,8 +469,8 @@ public class FrmMain : Form
         int row = 0;
         outer.Controls.Add(gbApi, 0, row);
         outer.Controls.Add(gbTally, 1, row); row++;
-        outer.Controls.Add(gbLedger, 0, row);
-        outer.SetColumnSpan(gbLedger, 2); row++;
+        outer.Controls.Add(gbFallback, 0, row);
+        outer.SetColumnSpan(gbFallback, 2); row++;
         outer.Controls.Add(gbSched, 0, row);
         outer.Controls.Add(gbLicense, 1, row); row++;
         outer.Controls.Add(gbDb, 0, row);
@@ -537,14 +566,14 @@ public class FrmMain : Form
     {
         _txtApiBaseUrl.Text = _config.ApiBaseUrl;
         _txtApiKey.Text = ConfigService.Unprotect(_config.ApiKeyProtected);
+        _txtAuthHeaderName.Text = _config.AuthHeaderName;
+        _txtAuthScheme.Text = _config.AuthScheme;
         _txtTallyUrl.Text = _config.TallyUrl;
-        _txtSalesLedger.Text = _config.SalesLedger;
-        _txtIgstLedger.Text = _config.IGSTLedger;
-        _txtCgstLedger.Text = _config.CGSTLedger;
-        _txtSgstLedger.Text = _config.SGSTLedger;
-        _txtRoundOffLedger.Text = _config.RoundOffLedger;
         _txtVoucherType.Text = _config.VoucherType;
         _txtBatchName.Text = _config.BatchName;
+        _txtVoucherClass.Text = _config.VoucherClass;
+        _txtTallyCompanyName.Text = _config.TallyCompanyName;
+        _chkPushAsOptional.Checked = _config.PushAsOptional;
         _numPushInterval.Value = Math.Clamp(_config.PushIntervalMinutes, 1, 1440);
         _chkStartMinimized.Checked = _config.StartMinimized;
         _chkAutoStart.Checked = _config.AutoStartWithWindows;
@@ -623,14 +652,14 @@ public class FrmMain : Form
     {
         _config.ApiBaseUrl = _txtApiBaseUrl.Text.Trim();
         _config.ApiKeyProtected = ConfigService.Protect(_txtApiKey.Text);
+        _config.AuthHeaderName = _txtAuthHeaderName.Text.Trim();
+        _config.AuthScheme = _txtAuthScheme.Text.Trim();
         _config.TallyUrl = _txtTallyUrl.Text.Trim();
-        _config.SalesLedger = _txtSalesLedger.Text.Trim();
-        _config.IGSTLedger = _txtIgstLedger.Text.Trim();
-        _config.CGSTLedger = _txtCgstLedger.Text.Trim();
-        _config.SGSTLedger = _txtSgstLedger.Text.Trim();
-        _config.RoundOffLedger = _txtRoundOffLedger.Text.Trim();
         _config.VoucherType = _txtVoucherType.Text.Trim();
         _config.BatchName = _txtBatchName.Text.Trim();
+        _config.VoucherClass = _txtVoucherClass.Text.Trim();
+        _config.TallyCompanyName = _txtTallyCompanyName.Text.Trim();
+        _config.PushAsOptional = _chkPushAsOptional.Checked;
         _config.PushIntervalMinutes = (int)_numPushInterval.Value;
         _config.StartMinimized = _chkStartMinimized.Checked;
         _config.AutoStartWithWindows = _chkAutoStart.Checked;
@@ -733,6 +762,8 @@ public class FrmMain : Form
     {
         ApiBaseUrl = _txtApiBaseUrl.Text.Trim(),
         ApiKeyProtected = ConfigService.Protect(_txtApiKey.Text),
+        AuthHeaderName = _txtAuthHeaderName.Text.Trim(),
+        AuthScheme = _txtAuthScheme.Text.Trim(),
         TallyUrl = _txtTallyUrl.Text.Trim()
     };
 

@@ -21,7 +21,7 @@
     <div class="col-4 col-md-3">
         <select id="statusFilter" class="form-select form-select-sm">
             <option value="">All Status</option>
-            @foreach (var s in new[] { "Cancelled", "Pending", "Synced", "Error" })
+            @foreach (var s in new[] { "Cancelled", "Pending", "Synced", "Invoiced", "Error" })
             {
                 <option value="@s">@s</option>
             }
@@ -33,12 +33,13 @@
 <div id="orderResults">
     @foreach (var o in Model)
     {
-        string statusClass = o.Status.ToString() switch
+        string statusClass = o.StatusLabel switch
         {
-            "Pending" => "badge-pending",
-            "Synced"  => "badge-synced",
-            "Error"   => "badge-error",
-            _         => "badge-cancelled"
+            "Pending"  => "badge-pending",
+            "Synced"   => "badge-synced",
+            "Invoiced" => "badge-invoiced",
+            "Error"    => "badge-error",
+            _          => "badge-cancelled"
         };
         <a href="/SaleOrder/Details/@o.SaleOrderId" class="text-decoration-none">
             <div class="order-card card px-3 py-2">
@@ -53,7 +54,7 @@
                     </div>
                     <div class="text-end ms-2 flex-shrink-0">
                         <div class="fw-bold">₹ @o.TotalAmount.ToString("N0")</div>
-                        <span class="badge @statusClass" style="font-size:.7rem">@o.Status</span>
+                        <span class="badge @statusClass" style="font-size:.7rem">@o.StatusLabel</span>
                     </div>
                 </div>
             </div>
@@ -145,7 +146,7 @@ function renderOrders(orders) {
     $('#searchStatus').text(count === 50 ? '50+ results' : count + ' result' + (count > 1 ? 's' : ''));
 
     var html = '';
-    var statusClasses = { Cancelled: 'badge-cancelled', Pending: 'badge-pending', Synced: 'badge-synced', Error: 'badge-error' };
+    var statusClasses = { Cancelled: 'badge-cancelled', Pending: 'badge-pending', Synced: 'badge-synced', Invoiced: 'badge-invoiced', Error: 'badge-error' };
     orders.forEach(function(o) {
         var sc = statusClasses[o.status] || 'badge-cancelled';
         var errorHtml = (o.status === 'Error' && o.syncError)

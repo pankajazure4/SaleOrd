@@ -41,7 +41,16 @@ public class SaleOrderController : Controller
         if (user.Role == AppRoles.Salesman)
             query = query.Where(o => o.CreatedById == user.Id);
 
-        if (!string.IsNullOrEmpty(status) && Enum.TryParse<OrderStatus>(status, out var s))
+        // "Invoiced" isn't a real OrderStatus value — it's Status==Synced
+        // with IsInvoiced also true, shown as its own status everywhere the
+        // badge appears. Filtering "Synced" here means synced-but-not-yet-
+        // invoiced specifically, so the two filters stay mutually exclusive,
+        // matching what the badge itself shows for any given order.
+        if (string.Equals(status, "Invoiced", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(o => o.Status == OrderStatus.Synced && o.IsInvoiced);
+        else if (string.Equals(status, nameof(OrderStatus.Synced), StringComparison.OrdinalIgnoreCase))
+            query = query.Where(o => o.Status == OrderStatus.Synced && !o.IsInvoiced);
+        else if (!string.IsNullOrEmpty(status) && Enum.TryParse<OrderStatus>(status, out var s))
             query = query.Where(o => o.Status == s);
 
         if (!string.IsNullOrEmpty(search))
@@ -87,6 +96,7 @@ public class SaleOrderController : Controller
                 LedgerName = o.LedgerName,
                 TotalAmount = o.TotalAmount,
                 Status = o.Status,
+                IsInvoiced = o.IsInvoiced,
                 CreatedByName = o.CreatedByName,
                 CreatedAt = o.CreatedAt,
                 SyncError = o.SyncError
@@ -114,7 +124,12 @@ public class SaleOrderController : Controller
         if (user.Role == AppRoles.Salesman)
             query = query.Where(o => o.CreatedById == user.Id);
 
-        if (!string.IsNullOrEmpty(status) && Enum.TryParse<OrderStatus>(status, out var s))
+        // Same "Invoiced" pseudo-status handling as Index() — see its comment.
+        if (string.Equals(status, "Invoiced", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(o => o.Status == OrderStatus.Synced && o.IsInvoiced);
+        else if (string.Equals(status, nameof(OrderStatus.Synced), StringComparison.OrdinalIgnoreCase))
+            query = query.Where(o => o.Status == OrderStatus.Synced && !o.IsInvoiced);
+        else if (!string.IsNullOrEmpty(status) && Enum.TryParse<OrderStatus>(status, out var s))
             query = query.Where(o => o.Status == s);
 
         if (!string.IsNullOrWhiteSpace(q))
@@ -131,7 +146,7 @@ public class SaleOrderController : Controller
                 o.SaleOrderId, o.OrderNo, o.LedgerName,
                 orderDate = o.OrderDate.ToString("dd MMM yyyy"),
                 o.TotalAmount,
-                status = o.Status.ToString(),
+                status = o.Status == OrderStatus.Synced && o.IsInvoiced ? "Invoiced" : o.Status.ToString(),
                 o.SyncError
             })
             .ToListAsync();
@@ -615,13 +630,29 @@ public class SaleOrderController : Controller
 
         var cId = companyId > 0 ? companyId : activeCompanyId;
 
-        var items = await _db.StockItems
+        // ClosingBalance is the item's overall (all-godowns) latest closing
+        // quantity — synced unconditionally on every Master Sync cycle (see
+        // the Agent's GetStockItemsAsync), same field already shown on
+        // Masters > Stock Items. Shown here as a remark under each item in
+        // the punch-order dropdown so a salesman can see current stock
+        // before picking an item — replaces the earlier godown-wise
+        // breakdown attempt (removed; that logic no longer exists anywhere).
+        var rows = await _db.StockItems
             .Where(s => s.CompanyId == cId &&
                 (string.IsNullOrEmpty(q) || s.ItemName.Contains(q)))
             .OrderBy(s => s.ItemName)
             .Take(50)
-            .Select(s => new { s.StockItemId, s.ItemName, s.UOM, s.Rate })
+            .Select(s => new { s.StockItemId, s.ItemName, s.UOM, s.Rate, s.ClosingBalance })
             .ToListAsync();
+
+        // Decimal format strings don't reliably translate to SQL, so this
+        // formatting step runs in memory, after the query, not inside the
+        // .Select() above.
+        var items = rows.Select(s => new
+        {
+            s.StockItemId, s.ItemName, s.UOM, s.Rate,
+            remark = s.ClosingBalance != 0 ? $"{s.ClosingBalance:0.###} {s.UOM} in stock" : null
+        });
 
         return Json(items);
     }
