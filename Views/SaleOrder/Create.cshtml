@@ -82,7 +82,12 @@
                 <input type="number" id="entryRate" class="form-control form-control-sm text-end" min="0" step="0.01" placeholder="0.00" title="Auto-filled from this customer's last rate for the item — editable" />
             </div>
 
-            <div class="col-12 col-md-3 d-flex gap-1 justify-content-end">
+            <div class="col-4 col-md-1">
+                <label class="form-label small fw-semibold mb-1">Disc %</label>
+                <input type="number" id="entryDiscount" class="form-control form-control-sm text-end" min="0" max="100" step="0.01" placeholder="0.00" />
+            </div>
+
+            <div class="col-12 col-md-2 d-flex gap-1 justify-content-end">
                 <button type="button" id="btnCancelEdit" class="btn btn-sm btn-outline-secondary w-100" style="display:none" onclick="cancelEditItem()" title="Cancel Edit">
                     <i class="bi bi-x-lg"></i>
                 </button>
@@ -99,9 +104,10 @@
                     <tr>
                         <th style="width: 5%" class="text-center">#</th>
                         <th>Item Details</th>
-                        <th class="text-end" style="width: 15%">Qty</th>
-                        <th class="text-end" style="width: 15%">Rate</th>
-                        <th class="text-end" style="width: 15%">Amount</th>
+                        <th class="text-end" style="width: 13%">Qty</th>
+                        <th class="text-end" style="width: 13%">Rate</th>
+                        <th class="text-end" style="width: 10%">Disc%</th>
+                        <th class="text-end" style="width: 14%">Amount</th>
                         <th class="text-center" style="width: 12%">Actions</th>
                     </tr>
                 </thead>
@@ -110,7 +116,7 @@
                 </tbody>
                 <tfoot>
                     <tr class="fw-semibold bg-light">
-                        <td colspan="4" class="text-end">Sub Total:</td>
+                        <td colspan="5" class="text-end">Sub Total:</td>
                         <td class="text-end text-secondary fw-bold" id="grandTotalLabel">₹ 0.00</td>
                         <td></td>
                     </tr>
@@ -209,6 +215,7 @@
                 uom: '@Html.Raw((item.UOM ?? "").Replace("'", "\\'"))',
                 qty: @item.Qty,
                 rate: @item.Rate,
+                discount: @item.Discount,
                 amount: @item.Amount,
                 godownId: @(item.GodownId.HasValue ? item.GodownId.Value.ToString() : "null"),
                 godownName: @Html.Raw(item.GodownName != null ? $"'{item.GodownName.Replace("'", "\\'")}'" : "null"),
@@ -410,6 +417,8 @@
         var uom = $('#entryItemUOM').val();
         var qty = parseFloat($('#entryQty').val());
         var rate = parseFloat($('#entryRate').val());
+        var discount = parseFloat($('#entryDiscount').val());
+        if (isNaN(discount)) discount = 0;
 
         // Validation
         if (!itemId || itemId === '') {
@@ -426,8 +435,16 @@
             $('#entryRate').focus();
             return;
         }
+        if (discount < 0 || discount > 100) {
+            showToast('danger', 'Discount must be between 0 and 100.', 'Validation Error');
+            $('#entryDiscount').focus();
+            return;
+        }
 
-        var amount = Math.round(qty * rate * 100) / 100;
+        // Matches the server's own formula exactly (Controllers/SaleOrderController.cs:
+        // item.Qty * item.Rate * (1 - item.Discount / 100)) — this is only a live preview,
+        // the server always recomputes and trusts its own result on save.
+        var amount = Math.round(qty * rate * (1 - discount / 100) * 100) / 100;
 
         var item = {
             stockItemId: parseInt(itemId),
@@ -435,6 +452,7 @@
             uom: uom,
             qty: qty,
             rate: rate,
+            discount: discount,
             amount: amount,
             godownId: null,
             godownName: null,
@@ -477,6 +495,7 @@
 
         $('#entryQty').val(item.qty);
         $('#entryRate').val(item.rate);
+        $('#entryDiscount').val(item.discount || 0);
 
         $('#editingIndex').val(idx);
         $('#btnCancelEdit').show();
@@ -512,6 +531,7 @@
         clearEntryItem();
         $('#entryQty').val('');
         $('#entryRate').val('');
+        $('#entryDiscount').val('');
     }
 
     // Render items table dynamically with hidden input fields
@@ -522,7 +542,7 @@
         var total = 0;
         
         if (itemsList.length === 0) {
-            tbody.append('<tr><td colspan="6" class="text-center text-muted py-3">No items added yet. Please use the entry form above to add items.</td></tr>');
+            tbody.append('<tr><td colspan="7" class="text-center text-muted py-3">No items added yet. Please use the entry form above to add items.</td></tr>');
             mobileContainer.append('<div class="text-center text-muted py-3 bg-light rounded border border-dashed small">No items added yet. Please use the entry form above to add items.</div>');
             $('#grandTotalLabel').text('₹ 0.00');
             $('#grandTotalMobileCard').attr('style', 'display: none !important;');
@@ -544,6 +564,7 @@
                 </td>
                 <td class="text-end">${item.qty.toFixed(3)}</td>
                 <td class="text-end">₹ ${item.rate.toFixed(2)}</td>
+                <td class="text-end">${(item.discount || 0).toFixed(2)}</td>
                 <td class="text-end fw-semibold">₹ ${item.amount.toFixed(2)}</td>
                 <td class="text-center">
                     <button type="button" class="btn btn-sm btn-outline-primary p-1 px-2 me-1" onclick="editItem(${idx})" title="Edit Item">
@@ -579,15 +600,19 @@
                         </div>
                     </div>
                     <div class="row g-1 text-center bg-light p-2 rounded border border-light mt-2" style="font-size: 0.85rem;">
-                        <div class="col-4 border-end">
+                        <div class="col-3 border-end">
                             <div class="text-muted small mb-1" style="font-size: 0.75rem;">Qty</div>
                             <div class="fw-bold">${item.qty.toFixed(3)}</div>
                         </div>
-                        <div class="col-4 border-end">
+                        <div class="col-3 border-end">
                             <div class="text-muted small mb-1" style="font-size: 0.75rem;">Rate</div>
                             <div class="fw-semibold">₹${item.rate.toFixed(2)}</div>
                         </div>
-                        <div class="col-4">
+                        <div class="col-3 border-end">
+                            <div class="text-muted small mb-1" style="font-size: 0.75rem;">Disc%</div>
+                            <div class="fw-semibold">${(item.discount || 0).toFixed(2)}</div>
+                        </div>
+                        <div class="col-3">
                             <div class="text-muted small mb-1" style="font-size: 0.75rem;">Amount</div>
                             <div class="fw-bold text-primary">₹${item.amount.toFixed(2)}</div>
                         </div>
@@ -603,6 +628,7 @@
             <input type="hidden" name="Items[${idx}].UOM" value="${escHtml(item.uom)}" />
             <input type="hidden" name="Items[${idx}].Qty" value="${item.qty}" />
             <input type="hidden" name="Items[${idx}].Rate" value="${item.rate}" />
+            <input type="hidden" name="Items[${idx}].Discount" value="${item.discount || 0}" />
             <input type="hidden" name="Items[${idx}].Amount" value="${item.amount}" />
             <input type="hidden" name="Items[${idx}].GodownId" value="${item.godownId || ''}" />
             <input type="hidden" name="Items[${idx}].GodownName" value="${escHtml(item.godownName || '')}" />`;

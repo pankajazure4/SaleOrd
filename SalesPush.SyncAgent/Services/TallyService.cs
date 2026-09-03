@@ -64,15 +64,17 @@ public class TallyService
     // callback failed (network blip, API-side error), so pending-orders
     // keeps handing back the same invoice forever. Pushing it again risks
     // a duplicate voucher or a Tally exception on the reused REMOTEID.
-    // Matched on VoucherTypeName + Reference (we always set REFERENCE =
-    // invoice.InvoiceNo — see PushSalesInvoiceAsync) rather than
-    // VoucherNumber, since VOUCHERNUMBER itself is left for Tally to
-    // auto-assign, not something we control. Ported from the same
-    // Collection/TDL "exists check" pattern LoheBgService uses, adapted to
-    // filter on Reference instead of VoucherNumber for that reason.
-    public async Task<bool> VoucherExistsByReferenceAsync(string tallyUrl, string companyName, string voucherTypeName, string reference)
+    // Matched on VoucherTypeName + VoucherNumber — now that
+    // PushSalesInvoiceAsync sets VOUCHERNUMBER = invoice.InvoiceNo
+    // explicitly (2026-09-03, per client request, rather than leaving it
+    // to Tally's auto-numbering), this can filter on VoucherNumber same as
+    // LoheBgService's proven-working exists-check, instead of the earlier
+    // Reference-based filter (2026-09-03 test: matched a "voucher" with
+    // every field blank — a $Reference filter that likely wasn't actually
+    // being applied by Tally; switched to VoucherNumber to fix that).
+    public async Task<bool> VoucherExistsAsync(string tallyUrl, string companyName, string voucherTypeName, string voucherNumber)
     {
-        if (string.IsNullOrWhiteSpace(reference)) return false;
+        if (string.IsNullOrWhiteSpace(voucherNumber)) return false;
 
         var fetchXml = $@"<ENVELOPE>
   <HEADER>
@@ -92,13 +94,13 @@ public class TallyService
           <COLLECTION NAME=""SalesPushVoucherExistsCheck"" ISINITIALIZE=""Yes"">
             <TYPE>Voucher</TYPE>
             <FETCH>Date, VoucherNumber, VoucherTypeName, Reference, MasterId</FETCH>
-            <FILTERS>TypeFilter, ReferenceFilter</FILTERS>
+            <FILTERS>TypeFilter, NumberFilter</FILTERS>
           </COLLECTION>
           <SYSTEM TYPE=""Formulae"" NAME=""TypeFilter"">
             $VoucherTypeName = ""{Escape(voucherTypeName)}""
           </SYSTEM>
-          <SYSTEM TYPE=""Formulae"" NAME=""ReferenceFilter"">
-            $Reference = ""{Escape(reference)}""
+          <SYSTEM TYPE=""Formulae"" NAME=""NumberFilter"">
+            $VoucherNumber = ""{Escape(voucherNumber)}""
           </SYSTEM>
         </TDLMESSAGE>
       </TDL>
@@ -114,13 +116,37 @@ public class TallyService
             // Inconclusive on any failure — never block a genuine push on a
             // guess; only skip when Tally positively confirms the voucher
             // is already there.
-            if (!response.IsSuccessStatusCode) return false;
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.Warn($"VoucherExistsAsync: HTTP {(int)response.StatusCode} for VoucherNumber='{voucherNumber}' — treating as not-found.");
+                return false;
+            }
 
             var raw = await response.Content.ReadAsStringAsync();
             var doc = XDocument.Parse(DeclareUdfNamespace(StripInvalidXmlChars(raw)));
-            return doc.Descendants("VOUCHER").Any();
+            var vouchers = doc.Descendants("VOUCHER").ToList();
+
+            // Diagnostic while this guard is still being validated
+            // (2026-09-03, switched from a Reference filter that matched a
+            // blank-fields "voucher" — likely never actually applied by
+            // Tally) — dumps every matched voucher's own VoucherNumber/
+            // Reference so a bad match is obvious from the log.
+            _logger.Info($"VoucherExistsAsync: Type='{voucherTypeName}' VoucherNumber='{voucherNumber}' -> {vouchers.Count} voucher(s) matched.");
+            foreach (var v in vouchers.Take(10))
+            {
+                var vNo = v.Element("VOUCHERNUMBER")?.Value ?? "";
+                var vRef = v.Element("REFERENCE")?.Value ?? "";
+                var vDate = v.Element("DATE")?.Value ?? "";
+                _logger.Info($"    matched voucher: Number='{vNo}' Reference='{vRef}' Date='{vDate}'");
+            }
+
+            return vouchers.Count > 0;
         }
-        catch { return false; }
+        catch (Exception ex)
+        {
+            _logger.Warn($"VoucherExistsAsync failed for VoucherNumber='{voucherNumber}': {ex.Message} — treating as not-found.");
+            return false;
+        }
     }
 
     // Pushes one SaleInvoice into Tally as a Sales Invoice voucher (ISINVOICE
@@ -239,11 +265,10 @@ public class TallyService
         // Bill-wise reference on the party's own entry — confirmed present
         // on every real voucher sampled, registered and cash-sale party
         // alike, so treated as always-required rather than optional.
-        // NAME uses our own InvoiceNo (not Tally's auto-assigned
-        // VOUCHERNUMBER, which we can't know ahead of a Create) — that's a
-        // deliberate choice, not yet double-checked against how this
-        // client wants bill-wise/aging reports to read; flag if that's
-        // wrong once real usage shows it.
+        // NAME uses invoice.InvoiceNo, same as VOUCHERNUMBER below (2026-09-03:
+        // explicitly set VOUCHERNUMBER = InvoiceNo per client request, instead
+        // of leaving it to Tally's own auto-numbering) — so this now matches
+        // the voucher's real number, not a separate reference.
         var billAllocXml = $@"
               <BILLALLOCATIONS.LIST>
                 <NAME>{Escape(invoice.InvoiceNo)}</NAME>
@@ -355,6 +380,7 @@ public class TallyService
             {(string.IsNullOrEmpty(voucherClass) ? "" : $"<CLASSNAME>{Escape(voucherClass)}</CLASSNAME>")}
             <PARTYNAME>{Escape(invoice.PartyLedgerName)}</PARTYNAME>
             <PARTYLEDGERNAME>{Escape(invoice.PartyLedgerName)}</PARTYLEDGERNAME>
+            <VOUCHERNUMBER>{Escape(invoice.InvoiceNo)}</VOUCHERNUMBER>
             <PARTYMAILINGNAME>{Escape(invoice.PartyLedgerName)}</PARTYMAILINGNAME>
             <BASICBUYERNAME>{Escape(invoice.PartyLedgerName)}</BASICBUYERNAME>
             <REFERENCE>{Escape(invoice.InvoiceNo)}</REFERENCE>
@@ -375,8 +401,17 @@ public class TallyService
   </BODY>
 </ENVELOPE>";
 
+        // Full request XML logged unconditionally while diagnosing pushes
+        // that fail with no LINEERROR (a bare ERRORS=1) — the request is
+        // the other half of that picture and the log has no other record
+        // of exactly what was sent for a given invoice.
+        _logger.Info($"Tally request for {invoice.InvoiceNo}:\n{xml}");
+
         var doc = await PostXmlAsync(tallyUrl, xml);
         if (doc == null) return (false, "Could not connect to Tally");
+
+        var rawResponse = doc.ToString();
+        _logger.Info($"Tally response for {invoice.InvoiceNo}:\n{rawResponse}");
 
         var lineError = doc.Descendants("LINEERROR").FirstOrDefault()?.Value;
         if (!string.IsNullOrEmpty(lineError)) return (false, lineError);
@@ -384,8 +419,15 @@ public class TallyService
         if (doc.Descendants("CREATED").FirstOrDefault()?.Value == "1") return (true, "Synced");
         if (doc.Descendants("ALTERED").FirstOrDefault()?.Value == "1") return (true, "Updated");
 
-        var raw = doc.ToString();
-        return (false, raw[..Math.Min(300, raw.Length)]);
+        // ERRORS>0 with no LINEERROR — Tally rejected the whole import
+        // without per-line detail. Seen so far on a retried push of an
+        // invoice/REMOTEID that already failed once before (this agent
+        // has no local DB, so it can't tell a genuinely-new invoice from
+        // one the API is still returning because ReportPushResultAsync is
+        // currently disabled — see SyncOrchestrator). The full request/
+        // response above are the only way to tell that apart from a new
+        // structural XML problem until that's confirmed either way.
+        return (false, rawResponse.Length > 500 ? rawResponse[..500] + "…" : rawResponse);
     }
 
     private static string GenericLedgerEntry(string ledgerName, decimal amount) => $@"

@@ -73,11 +73,14 @@ public class ApiDataService
     public async Task<List<SaleInvoice>> GetPendingSalesAsync(AgentConfig config)
     {
         using var http = BuildClient(config);
+        var requestUrl = (http.BaseAddress?.ToString() ?? "") + PendingOrdersPath;
         string raw;
         try
         {
+            _logger.Info($"GET {requestUrl}");
             var response = await http.GetAsync(PendingOrdersPath);
             raw = await response.Content.ReadAsStringAsync();
+            _logger.Info($"Pending-orders response: HTTP {(int)response.StatusCode}, {raw.Length} byte(s).");
             if (!response.IsSuccessStatusCode)
             {
                 _logger.Error($"Pending-orders request failed: HTTP {(int)response.StatusCode}. Response: {Truncate(raw)}");
@@ -86,37 +89,46 @@ public class ApiDataService
         }
         catch (Exception ex)
         {
-            _logger.Error("Failed to load pending sales from API", ex);
+            _logger.Error($"Failed to load pending sales from API ({requestUrl})", ex);
             return new();
         }
+
+        // Log the raw body (truncated) unconditionally while diagnosing
+        // this — even a 200 OK can carry an unexpected shape (empty array
+        // vs. an error object vs. HTML), and the summary below only shows
+        // what actually deserialized into a SaleInvoice.
+        _logger.Info($"Pending-orders raw body: {Truncate(raw)}");
 
         // Parsed separately from the request itself so a non-JSON body (an
         // HTML error/login page, most often — wrong path, auth redirect,
         // reverse-proxy error) logs the actual response instead of just
         // System.Text.Json's generic "'<' is an invalid start of a value."
+        List<SaleInvoice> sales;
         try
         {
-            var sales = JsonSerializer.Deserialize<List<SaleInvoice>>(raw, JsonOpts);
-            return sales ?? new();
+            sales = JsonSerializer.Deserialize<List<SaleInvoice>>(raw, JsonOpts) ?? new();
         }
         catch (JsonException jex)
         {
             _logger.Error($"Pending-orders response wasn't valid JSON ({jex.Message}). Response: {Truncate(raw)}");
             return new();
         }
+
+        foreach (var s in sales)
+            _logger.Info($"  Pending: SaleInvoiceId={s.SaleInvoiceId} InvoiceNo='{s.InvoiceNo}' Company='{s.CompanyName}' VoucherType='{s.VoucherType}' Items={s.Items.Count} LedgerEntries={s.LedgerEntries.Count} Party='{s.PartyLedgerName}'");
+
+        return sales;
     }
 
-    private static string Truncate(string s) => s.Length <= 400 ? s : s[..400] + "…";
+    private static string Truncate(string s) => s.Length <= 2000 ? s : s[..2000] + "…";
 
     // Reports the outcome of a single Tally push back to the API so it
     // stops returning that sale from pending-orders.
     //
-    // voucherNumber/voucherDate on success are best-effort: Tally's Import
-    // Data response confirms CREATED but doesn't hand back the voucher
-    // number it auto-assigned, so this reports our own InvoiceNo/
-    // InvoiceDate for now. Revisit once a real exported voucher XML sample
-    // shows whether that's good enough, or whether a follow-up Tally
-    // lookup (by REMOTEID) is needed for the true assigned number.
+    // voucherNumber = invoice.InvoiceNo exactly, since TallyService now sets
+    // VOUCHERNUMBER = InvoiceNo explicitly on push (2026-09-03, per client
+    // request) instead of leaving it to Tally's own auto-numbering — so
+    // this is the real voucher number, not a best-effort guess.
     public async Task ReportPushResultAsync(AgentConfig config, SaleInvoice invoice, bool success, string? message)
     {
         using var http = BuildClient(config);

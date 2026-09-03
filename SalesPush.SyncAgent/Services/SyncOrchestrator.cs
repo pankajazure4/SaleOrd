@@ -165,25 +165,21 @@ public class SyncOrchestrator
                 var invoice = invoices[i];
                 var voucherType = string.IsNullOrWhiteSpace(invoice.VoucherType) ? _config.VoucherType : invoice.VoucherType;
 
-                // Guard: if this invoice is already in Tally (matched on
-                // VoucherTypeName + Reference — see TallyService.
-                // VoucherExistsByReferenceAsync), don't push it again. This
-                // is what happens when a prior push actually succeeded but
-                // the API's own "mark as synced" callback failed, so
-                // pending-orders keeps handing back the same invoice —
-                // re-pushing would risk a duplicate voucher or a Tally
-                // exception. Report success again instead, so the API
-                // finally stops sending it.
-                if (await _tally.VoucherExistsByReferenceAsync(_config.TallyUrl, group.Key, voucherType, invoice.InvoiceNo))
-                {
-                    _logger.Warn($"[{group.Key}] {invoice.InvoiceNo} already exists in Tally (matched by Reference) — reporting success without re-pushing.");
-                    await _api.ReportPushResultAsync(_config, invoice, true, "Already present in Tally — not re-pushed.");
-                    pushed++;
-
-                    if (i < invoices.Count - 1)
-                        await Task.Delay(800);
-                    continue;
-                }
+                // TEMP OBSERVATION-ONLY MODE (2026-09-03): the original
+                // Reference-based version of this guard false-positived on
+                // ORD-2026-0208's very first cycle (matched a "voucher" with
+                // every field blank — the $Reference TDL filter likely
+                // wasn't actually being applied by Tally). Switched to
+                // filtering on VoucherNumber instead (TallyService.
+                // VoucherExistsAsync), now that PushSalesInvoiceAsync sets
+                // VOUCHERNUMBER = InvoiceNo explicitly — same field
+                // LoheBgService's proven-working exists-check uses. Still
+                // untested, so still logging its verdict without acting on
+                // it — every invoice pushes normally below until a clean
+                // run confirms this version is reliable.
+                var wouldSkip = await _tally.VoucherExistsAsync(_config.TallyUrl, group.Key, voucherType, invoice.InvoiceNo);
+                if (wouldSkip)
+                    _logger.Warn($"[{group.Key}] {invoice.InvoiceNo}: guard says already-exists (see diagnostic lines above) — pushing anyway, guard is observation-only right now.");
 
                 _logger.Info($"[{group.Key}] Pushing {invoice.InvoiceNo}...");
 
@@ -191,6 +187,12 @@ public class SyncOrchestrator
                     _config.TallyUrl, invoice, group.Key,
                     _config.VoucherType, _config.BatchName, _config.VoucherClass, _config.PushAsOptional);
 
+                // Re-enabled (2026-09-03) — was temporarily disabled while
+                // diagnosing the false-positive guard and the ERRORS=1/no-
+                // LINEERROR push failure, so a wrong "success" couldn't get
+                // marked done on the API side by mistake. Both are now
+                // either fixed or in observation-only mode, so reporting
+                // real push results back is safe to test again.
                 await _api.ReportPushResultAsync(_config, invoice, success, message);
 
                 if (success) { pushed++; _logger.Info($"Pushed {invoice.InvoiceNo} -> Tally"); }
