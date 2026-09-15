@@ -19,6 +19,11 @@ public class Ledger
     public string? VATTINNo { get; set; }
     public string? FSSAINo { get; set; }
 
+    // Mirrors Models/Domain/Ledger.cs — set by an Admin at Party Approval,
+    // pushed to Tally as a UDF field if configured (Settings > Order
+    // Defaults > Tally Zone UDF Field), same mechanism as FSSAINo.
+    public string? ZoneName { get; set; }
+
     public decimal CreditLimit { get; set; }
     public string? CreditPeriod { get; set; }     // Tally's "Default credit period", e.g. "1 Days"
     public decimal OpeningBalance { get; set; }

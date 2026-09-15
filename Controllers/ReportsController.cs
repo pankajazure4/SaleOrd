@@ -124,7 +124,8 @@ public class ReportsController : Controller
         if (!await _permSvc.HasAsync(user.Role, AppPermissions.ReportsSummary)) return Forbid();
 
         var (fromDate, toDate) = DateRange(from, to);
-        var orders = await BaseQuery(companyId, user, fromDate, toDate).ToListAsync();
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        var orders = await BaseQuery(companyId, visibleIds, fromDate, toDate).ToListAsync();
 
         return Json(new
         {
@@ -149,7 +150,8 @@ public class ReportsController : Controller
         if (!await _permSvc.HasAsync(user.Role, AppPermissions.ReportsSummary)) return Forbid();
 
         var (fromDate, toDate) = DateRange(from, to);
-        var query = BaseQuery(companyId, user, fromDate, toDate);
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        var query = BaseQuery(companyId, visibleIds, fromDate, toDate);
 
         if (!string.IsNullOrWhiteSpace(q))
         {
@@ -187,7 +189,8 @@ public class ReportsController : Controller
         if (!await _permSvc.HasAsync(user.Role, AppPermissions.ReportsPartyWise)) return Forbid();
 
         var (fromDate, toDate) = DateRange(from, to);
-        var result = await BaseQuery(companyId, user, fromDate, toDate)
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        var result = await BaseQuery(companyId, visibleIds, fromDate, toDate)
             .GroupBy(o => new { o.LedgerId, o.LedgerName })
             .Select(g => new
             {
@@ -212,7 +215,8 @@ public class ReportsController : Controller
         if (!await _permSvc.HasAsync(user.Role, AppPermissions.ReportsDayWise)) return Forbid();
 
         var (fromDate, toDate) = DateRange(from, to);
-        var orders = await BaseQuery(companyId, user, fromDate, toDate)
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        var orders = await BaseQuery(companyId, visibleIds, fromDate, toDate)
             .Select(o => new
             {
                 o.OrderDate,
@@ -245,7 +249,8 @@ public class ReportsController : Controller
         if (!await _permSvc.HasAsync(user.Role, AppPermissions.ReportsUserWise)) return Forbid();
 
         var (fromDate, toDate) = DateRange(from, to);
-        var rangeResult = await BaseQuery(companyId, user, fromDate, toDate)
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        var rangeResult = await BaseQuery(companyId, visibleIds, fromDate, toDate)
             .GroupBy(o => new { o.CreatedById, o.CreatedByName })
             .Select(g => new
             {
@@ -265,8 +270,8 @@ public class ReportsController : Controller
         var today      = DateTime.Today;
         var monthStart = new DateTime(today.Year, today.Month, 1);
         var allOrdersQuery = _db.SaleOrders.Where(o => o.CompanyId == companyId);
-        if (user.Role == AppRoles.Salesman)
-            allOrdersQuery = allOrdersQuery.Where(o => o.CreatedById == user.Id);
+        if (visibleIds != null)
+            allOrdersQuery = allOrdersQuery.Where(o => visibleIds.Contains(o.CreatedById));
 
         var absoluteStats = await allOrdersQuery
             .GroupBy(o => new { o.CreatedById })
@@ -307,7 +312,8 @@ public class ReportsController : Controller
         if (!await _permSvc.HasAsync(user.Role, AppPermissions.ReportsPending)) return Forbid();
 
         var (fromDate, toDate) = DateRange(from, to);
-        var result = await BaseQuery(companyId, user, fromDate, toDate)
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        var result = await BaseQuery(companyId, visibleIds, fromDate, toDate)
             .Where(o => o.Status == OrderStatus.Pending || o.Status == OrderStatus.Error)
             .OrderByDescending(o => o.OrderDate)
             .Select(o => new
@@ -330,8 +336,14 @@ public class ReportsController : Controller
         if (!await _permSvc.HasAsync(user.Role, AppPermissions.ReportsUserPerf)) return Forbid();
 
         var (fromDate, toDate) = DateRange(from, to);
+        // This had no hierarchy/ownership filter at all before — a Salesman
+        // with the UserPerf permission could see every user's figures, not
+        // just their own team's. Bringing it in line with every other
+        // report here while touching this file for the hierarchy feature.
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
         var result = await _db.SaleOrders
-            .Where(o => o.CompanyId == companyId && o.OrderDate >= fromDate && o.OrderDate <= toDate)
+            .Where(o => o.CompanyId == companyId && o.OrderDate >= fromDate && o.OrderDate <= toDate
+                && (visibleIds == null || visibleIds.Contains(o.CreatedById)))
             .GroupBy(o => new { o.CreatedById, o.CreatedByName })
             .Select(g => new
             {
@@ -363,7 +375,8 @@ public class ReportsController : Controller
         if (!await _permSvc.HasAsync(user.Role, AppPermissions.ReportsTransactionCompare)) return Forbid();
 
         var (fromDate, toDate) = DateRange(from, to);
-        var orders = await BaseQuery(companyId, user, fromDate, toDate)
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        var orders = await BaseQuery(companyId, visibleIds, fromDate, toDate)
             .Where(o => o.IsInvoiced && o.TallyInvoiceNo != null)
             .Include(o => o.Items)
             .OrderByDescending(o => o.OrderDate)
@@ -430,7 +443,8 @@ public class ReportsController : Controller
         if (!await _permSvc.HasAsync(user.Role, AppPermissions.ReportsSummary)) return Forbid();
 
         var (fromDate, toDate) = DateRange(from, to);
-        var query = BaseQuery(companyId, user, fromDate, toDate);
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        var query = BaseQuery(companyId, visibleIds, fromDate, toDate);
 
         if (!string.IsNullOrEmpty(status) && Enum.TryParse<OrderStatus>(status, out var s))
             query = query.Where(o => o.Status == s);
@@ -452,6 +466,48 @@ public class ReportsController : Controller
             .ToListAsync();
 
         return Json(result);
+    }
+
+    // Backs the clickable Invoice No in the Summary / Order vs Invoice
+    // reports — shows the Tally invoice's own line items (from the
+    // VoucherInventoryEntries the Rates sync already pulled in), not the
+    // Sale Order's. No extra permission gate beyond being a resolved user
+    // of this company: reaching this only happens by clicking an invoice no.
+    // the caller could already see in a report they were already allowed to open.
+    [HttpGet]
+    public async Task<IActionResult> InvoiceDetails(string invoiceNo)
+    {
+        var (companyId, user) = await _resolver.ResolveAsync();
+        if (user == null) return Unauthorized();
+        if (string.IsNullOrWhiteSpace(invoiceNo)) return BadRequest();
+
+        var lines = await _db.VoucherInventoryEntries
+            .Where(v => v.CompanyId == companyId && v.VoucherNumber == invoiceNo)
+            .OrderBy(v => v.VoucherInventoryEntryId)
+            .Select(v => new
+            {
+                v.StockItemName, v.ActualQty, v.BilledQty, v.Rate, v.Amount, v.Discount, v.GodownName
+            })
+            .ToListAsync();
+
+        if (lines.Count == 0)
+            return Json(new { found = false });
+
+        var header = await _db.VoucherInventoryEntries
+            .Where(v => v.CompanyId == companyId && v.VoucherNumber == invoiceNo)
+            .Select(v => new { v.VoucherNumber, v.VoucherDate, v.PartyLedgerName, v.VoucherTypeName })
+            .FirstAsync();
+
+        return Json(new
+        {
+            found = true,
+            header.VoucherNumber,
+            header.VoucherDate,
+            header.PartyLedgerName,
+            header.VoucherTypeName,
+            total = lines.Sum(l => l.Amount),
+            lines
+        });
     }
 
     [HttpGet]
@@ -476,12 +532,17 @@ public class ReportsController : Controller
         return (f, t);
     }
 
-    private IQueryable<SaleOrder> BaseQuery(int companyId, AppUser user, DateTime from, DateTime to)
+    // visibleIds is precomputed by each caller (UserVisibility.VisibleCreatorIdsAsync)
+    // rather than looked up in here — keeps this synchronous so every
+    // existing `BaseQuery(...)` call site (several chain more LINQ off the
+    // result, some without awaiting anything else first) didn't need to
+    // become async just for this.
+    private IQueryable<SaleOrder> BaseQuery(int companyId, HashSet<string>? visibleIds, DateTime from, DateTime to)
     {
         var q = _db.SaleOrders
             .Where(o => o.CompanyId == companyId && o.OrderDate >= from && o.OrderDate <= to);
-        if (user.Role == AppRoles.Salesman)
-            q = q.Where(o => o.CreatedById == user.Id);
+        if (visibleIds != null)
+            q = q.Where(o => visibleIds.Contains(o.CreatedById));
         return q;
     }
 }

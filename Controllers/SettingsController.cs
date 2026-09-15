@@ -78,6 +78,7 @@ public class SettingsController : Controller
         // wrong. See TallyService.PushSaleOrderAsync.)
         ViewBag.DefaultVoucherType = allSettings.FirstOrDefault(s => s.Key == "DefaultVoucherType")?.Value ?? "Sales Order";
         ViewBag.TallyFssaiUdfField = allSettings.FirstOrDefault(s => s.Key == "TallyFssaiUdfField")?.Value ?? "";
+        ViewBag.TallyZoneUdfField  = allSettings.FirstOrDefault(s => s.Key == "TallyZoneUdfField")?.Value ?? "";
 
         // License status
         var licenseKey = await _license.GetLicenseKeyAsync();
@@ -86,7 +87,48 @@ public class SettingsController : Controller
         ViewBag.LicenseStatus    = await _license.CheckAsync();
 
         ViewBag.LogoUrl = allSettings.FirstOrDefault(s => s.Key == "LogoUrl")?.Value;
+
+        ViewBag.Zones = await _db.Zones
+            .Include(z => z.Company)
+            .OrderBy(z => z.Company!.CompanyName).ThenBy(z => z.ZoneName)
+            .ToListAsync();
+
         return View();
+    }
+
+    // Zones — the fixed list an Admin picks a party's Zone from at Party
+    // Approval (Admin > Pending Parties). Per-company; no delete, just
+    // deactivate (ToggleZone) — same convention as ToggleUser, so a Zone
+    // already assigned to existing parties never becomes a dangling
+    // reference, it just stops being offered for new approvals.
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> AddZone(string zoneName, int companyId)
+    {
+        if (string.IsNullOrWhiteSpace(zoneName) || companyId <= 0)
+        {
+            TempData["Error"] = "Enter a zone name and pick a company.";
+            return RedirectToAction(nameof(Index));
+        }
+        var name = zoneName.Trim();
+        if (await _db.Zones.AnyAsync(z => z.CompanyId == companyId && z.ZoneName == name))
+        {
+            TempData["Error"] = $"Zone \"{name}\" already exists for this company.";
+            return RedirectToAction(nameof(Index));
+        }
+        _db.Zones.Add(new Zone { ZoneName = name, CompanyId = companyId, IsActive = true });
+        await _db.SaveChangesAsync();
+        TempData["Success"] = $"Zone \"{name}\" added.";
+        return RedirectToAction(nameof(Index));
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> ToggleZone(int id)
+    {
+        var zone = await _db.Zones.FindAsync(id);
+        if (zone == null) return NotFound();
+        zone.IsActive = !zone.IsActive;
+        await _db.SaveChangesAsync();
+        return RedirectToAction(nameof(Index));
     }
 
     [HttpPost, ValidateAntiForgeryToken]
@@ -186,7 +228,7 @@ public class SettingsController : Controller
     }
 
     [HttpPost, ValidateAntiForgeryToken]
-    public async Task<IActionResult> SaveOrderDefaults(string defaultVoucherType, string? tallyFssaiUdfField)
+    public async Task<IActionResult> SaveOrderDefaults(string defaultVoucherType, string? tallyFssaiUdfField, string? tallyZoneUdfField)
     {
         // DefaultGodownName/DefaultBatchName intentionally no longer read
         // here — see the comment above ViewBag.DefaultVoucherType in Index().
@@ -194,6 +236,7 @@ public class SettingsController : Controller
         {
             ["DefaultVoucherType"] = string.IsNullOrWhiteSpace(defaultVoucherType) ? "Sales Order" : defaultVoucherType.Trim(),
             ["TallyFssaiUdfField"] = tallyFssaiUdfField?.Trim() ?? "",
+            ["TallyZoneUdfField"]  = tallyZoneUdfField?.Trim() ?? "",
         };
         foreach (var (key, val) in keys)
         {

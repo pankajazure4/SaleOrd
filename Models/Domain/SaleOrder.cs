@@ -25,6 +25,15 @@ public class SaleOrder
     public OrderStatus Status { get; set; } = OrderStatus.Cancelled;
     public string? TallyVoucherNo { get; set; }
     public string? SyncError { get; set; }
+
+    // Set when a Sale Order that had already been pushed to Tally
+    // (TallyVoucherNo != null) is cancelled here — tells the Agent it still
+    // owes Tally an ACTION="Cancel" push for that voucher. Cleared once that
+    // push succeeds. An order cancelled before ever reaching Tally
+    // (TallyVoucherNo still null) never sets this — there's nothing in Tally
+    // to cancel.
+    public bool CancelPushPending { get; set; }
+    public DateTime? CancelPushedAt { get; set; }
     public string CreatedById { get; set; } = string.Empty;
     public string CreatedByName { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; } = DateTime.Now;

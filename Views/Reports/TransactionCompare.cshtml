@@ -55,6 +55,21 @@
     </div>
 </div>
 
+<!-- Invoice details modal -->
+<div class="modal fade" id="invoiceDetailsModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header py-2">
+                <h6 class="modal-title"><i class="bi bi-receipt me-1"></i>Invoice Details</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="invoiceDetailsBody">
+                <div class="text-center py-4 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="text-muted small mt-2">
     <i class="bi bi-info-circle me-1"></i>
     An item showing "Not synced" hasn't necessarily gone wrong in Tally — it means the Rates sync (Config &gt; Sync Rates,
@@ -120,7 +135,9 @@ function rowHtml(o, it) {
         '<td class="small"><a href="/SaleOrder/Details/' + o.saleOrderId + '">' + esc(o.orderNo) + '</a></td>' +
         '<td class="small">' + fmtDate(o.orderDate) + '</td>' +
         '<td class="small">' + esc(o.ledgerName) + '</td>' +
-        '<td class="small">' + esc(o.invoiceNo || '—') + '</td>' +
+        '<td class="small">' + (o.invoiceNo
+            ? '<a href="#" onclick="showInvoiceDetails(\'' + esc(o.invoiceNo).replace(/'/g, "\\'") + '\');return false;">' + esc(o.invoiceNo) + '</a>'
+            : '—') + '</td>' +
         '<td class="small">' + fmtDate(o.invoiceDate) + '</td>' +
         itemCells +
         '<td>' + matchCell + '</td>' +
@@ -142,5 +159,39 @@ function fmt(n) { return (n||0).toLocaleString('en-IN',{minimumFractionDigits:2,
 function fmtQty(n) { return (n||0).toLocaleString('en-IN',{minimumFractionDigits:0,maximumFractionDigits:3}); }
 function fmtDate(s) { if (!s) return '—'; var d = new Date(s); return d.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'2-digit'}); }
 function esc(s) { var d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
+
+// Invoice No click → Tally's own invoice line items (VoucherInventoryEntries) —
+// same modal/endpoint as the Sales Summary report.
+function showInvoiceDetails(invoiceNo) {
+    var modalEl = document.getElementById('invoiceDetailsModal');
+    var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    $('#invoiceDetailsBody').html('<div class="text-center py-4 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>');
+    modal.show();
+
+    $.get('/Reports/InvoiceDetails', { invoiceNo: invoiceNo }, function(d) {
+        if (!d.found) {
+            $('#invoiceDetailsBody').html('<div class="text-center text-muted py-3 small">Invoice line items not synced yet — the Rates sync hasn\'t pulled this voucher in.</div>');
+            return;
+        }
+        var rows = d.lines.map(function(l) {
+            return '<tr><td class="small">' + esc(l.stockItemName) + (l.godownName ? '<br><small class="text-muted">' + esc(l.godownName) + '</small>' : '') + '</td>' +
+                '<td class="text-end small">' + fmtQty(l.billedQty) + '</td>' +
+                '<td class="text-end small">₹' + fmt(l.rate) + '</td>' +
+                '<td class="text-end small">' + (l.discount > 0 ? l.discount.toFixed(2) + '%' : '—') + '</td>' +
+                '<td class="text-end small fw-semibold">₹' + fmt(l.amount) + '</td></tr>';
+        }).join('');
+        $('#invoiceDetailsBody').html(
+            '<div class="d-flex justify-content-between mb-2 small text-muted">' +
+            '<span><strong>' + esc(d.voucherNumber) + '</strong> · ' + fmtDate(d.voucherDate) + '</span>' +
+            '<span>' + esc(d.partyLedgerName) + '</span></div>' +
+            '<div class="table-responsive"><table class="table table-sm mb-0">' +
+            '<thead class="table-light"><tr><th>Item</th><th class="text-end">Qty</th><th class="text-end">Rate</th><th class="text-end">Disc%</th><th class="text-end">Amount</th></tr></thead>' +
+            '<tbody>' + rows + '</tbody>' +
+            '<tfoot><tr class="fw-semibold bg-light"><td colspan="4" class="text-end">Total</td><td class="text-end">₹' + fmt(d.total) + '</td></tr></tfoot>' +
+            '</table></div>');
+    }).fail(function() {
+        $('#invoiceDetailsBody').html('<div class="text-center text-danger py-3 small">Failed to load invoice details.</div>');
+    });
+}
 </script>
 }

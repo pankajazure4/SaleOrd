@@ -137,10 +137,18 @@
                             }
                         </select>
                         <label class="form-label small fw-semibold">Company Access</label>
-                        <select name="companyId" class="form-select" required>
+                        <select name="companyId" class="form-select mb-2" required>
                             @foreach (var c in (ViewBag.Companies as IEnumerable<SaleOrd.Models.Domain.Company> ?? Enumerable.Empty<SaleOrd.Models.Domain.Company>()))
                             {
                                 <option value="@c.CompanyId" selected="@(c.CompanyId == r.RequestedCompanyId)">@c.CompanyName</option>
+                            }
+                        </select>
+                        <label class="form-label small fw-semibold">Reports To <small class="text-muted fw-normal">(only needed for a Salesman)</small></label>
+                        <select name="managerId" class="form-select">
+                            <option value="">— None —</option>
+                            @foreach (var m in (ViewBag.Managers as List<SaleOrd.Models.Domain.AppUser> ?? new List<SaleOrd.Models.Domain.AppUser>()))
+                            {
+                                <option value="@m.Id">@m.FullName</option>
                             }
                         </select>
                         <div class="text-muted small mt-2">

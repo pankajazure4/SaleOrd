@@ -11,6 +11,8 @@ public class SaleOrder
     public int CompanyId { get; set; }
     public string? Narration { get; set; }
     public decimal TotalAmount { get; set; }
+    public string CreatedByName { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
 
     public string TaxType { get; set; } = "None";
     public decimal TaxPercent { get; set; }
@@ -25,6 +27,12 @@ public class SaleOrder
     public string? TallyVoucherNo { get; set; }
     public string? SyncError { get; set; }
     public DateTime? SyncedAt { get; set; }
+
+    // Mirrors Models/Domain/SaleOrder.cs — set by the web app when a
+    // previously-pushed (TallyVoucherNo != null) order is cancelled here;
+    // tells this Agent it still owes Tally an ACTION="Cancel" push.
+    public bool CancelPushPending { get; set; }
+    public DateTime? CancelPushedAt { get; set; }
 
     public bool IsInvoiced { get; set; }
     public string? TallyInvoiceNo { get; set; }

@@ -109,7 +109,7 @@ public class SqlDataService
         await conn.OpenAsync();
         var rows = await conn.QueryAsync<Ledger>(
             "SELECT LedgerId, LedgerName, Parent, Address, State, PinCode, MobileNo, Email, LedgerFax, " +
-            "GSTNo, TaxType, IncomeTaxNo, VATTINNo, FSSAINo, CreditLimit, CreditPeriod, OpeningBalance, " +
+            "GSTNo, TaxType, IncomeTaxNo, VATTINNo, FSSAINo, ZoneName, CreditLimit, CreditPeriod, OpeningBalance, " +
             "ClosingBalance, GUID, AlterId, CompanyId, LastSyncedAt, IsManuallyCreated, ApprovalStatus, TallyPushedAt " +
             "FROM Ledgers WHERE CompanyId = @CompanyId AND IsManuallyCreated = 1 AND ApprovalStatus = 1 AND TallyPushedAt IS NULL",
             new { CompanyId = companyId });
@@ -592,6 +592,58 @@ public class SqlDataService
                 Status = success ? 2 : 3, // 2 = Synced, 3 = Error
                 Now = DateTime.Now,
                 VoucherNo = success ? tallyVoucherNo : null,
+                Error = success ? null : message,
+                Id = saleOrderId
+            });
+    }
+
+    // Orders cancelled here (Status=0/Cancelled) that had already reached
+    // Tally (TallyVoucherNo set) before cancellation — still owed an
+    // ACTION="Cancel" push there. Separate from GetPendingOrdersAsync on
+    // purpose: cancelling in the app flips Status to Cancelled immediately
+    // (the UI shouldn't wait on Tally), so this can't reuse the
+    // Status=1/Pending queue at all.
+    public async Task<List<SaleOrder>> GetCancelPendingOrdersAsync(string connString, int companyId)
+    {
+        using var conn = new SqlConnection(connString);
+        await conn.OpenAsync();
+
+        var orders = (await conn.QueryAsync<SaleOrder>(
+            "SELECT * FROM SaleOrders WHERE CompanyId = @CompanyId AND Status = 0 AND CancelPushPending = 1",
+            new { CompanyId = companyId })).ToList();
+        if (orders.Count == 0) return orders;
+
+        var orderIds = orders.Select(o => o.SaleOrderId).ToList();
+        var items = (await conn.QueryAsync<SaleOrderItem>(
+            "SELECT * FROM SaleOrderItems WHERE SaleOrderId IN @Ids", new { Ids = orderIds })).ToList();
+
+        var ledgerIds = orders.Select(o => o.LedgerId).Distinct().ToList();
+        var ledgers = (await conn.QueryAsync<Ledger>(
+            "SELECT * FROM Ledgers WHERE LedgerId IN @Ids", new { Ids = ledgerIds }))
+            .ToDictionary(l => l.LedgerId);
+
+        foreach (var o in orders)
+        {
+            o.Items = items.Where(i => i.SaleOrderId == o.SaleOrderId).ToList();
+            if (ledgers.TryGetValue(o.LedgerId, out var ledger)) o.Ledger = ledger;
+        }
+        return orders;
+    }
+
+    public async Task UpdateOrderCancelPushResultAsync(string connString, int saleOrderId, bool success, string? message)
+    {
+        using var conn = new SqlConnection(connString);
+        await conn.OpenAsync();
+        // On failure CancelPushPending stays 1 so the next cycle retries —
+        // SyncError is overwritten with the cancel-push failure so it's
+        // visible on the order, same as any other push error.
+        await conn.ExecuteAsync(@"
+            UPDATE SaleOrders SET CancelPushPending=@Pending, CancelPushedAt=@Now, SyncError=@Error
+            WHERE SaleOrderId=@Id",
+            new
+            {
+                Pending = success ? 0 : 1,
+                Now = success ? DateTime.Now : (DateTime?)null,
                 Error = success ? null : message,
                 Id = saleOrderId
             });

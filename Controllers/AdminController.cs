@@ -44,6 +44,15 @@ public class AdminController : Controller
     private static bool IsProtectedRole(string role) =>
         role is AppRoles.Admin or AppRoles.Manager or AppRoles.Salesman;
 
+    // Dropdown source for "Reports To" — anyone who isn't a Salesman
+    // (Manager, Admin, or any custom role an Admin creates later via Manage
+    // Roles) is a valid target. Deliberately "not Salesman" rather than a
+    // hardcoded Manager/Admin list, so a future custom role (e.g.
+    // "Regional Head") works here automatically with no code change.
+    private async Task<List<AppUser>> GetManagersAsync() =>
+        await _db.Users.Where(u => u.Role != AppRoles.Salesman && u.IsActive)
+            .OrderBy(u => u.FullName).ToListAsync();
+
     // Companies
     public async Task<IActionResult> Companies()
     {
@@ -122,6 +131,7 @@ public class AdminController : Controller
     {
         var users = await _db.Users
             .Include(u => u.UserCompanies).ThenInclude(uc => uc.Company)
+            .Include(u => u.Manager)
             .OrderBy(u => u.FullName)
             .Select(u => new UserListVM
             {
@@ -130,7 +140,8 @@ public class AdminController : Controller
                 Email = u.Email ?? string.Empty,
                 Role = u.Role,
                 Companies = string.Join(", ", u.UserCompanies.Select(uc => uc.Company!.CompanyName)),
-                IsActive = u.IsActive
+                IsActive = u.IsActive,
+                ManagerName = u.Manager != null ? u.Manager.FullName : null
             })
             .ToListAsync();
         return View(users);
@@ -141,6 +152,7 @@ public class AdminController : Controller
     {
         ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
         ViewBag.Roles = await GetAllRoleNamesAsync();
+        ViewBag.Managers = await GetManagersAsync();
         return View(new UserCreateVM());
     }
 
@@ -157,6 +169,7 @@ public class AdminController : Controller
         {
             ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
             ViewBag.Roles = await GetAllRoleNamesAsync();
+            ViewBag.Managers = await GetManagersAsync();
             return View(model);
         }
 
@@ -166,7 +179,8 @@ public class AdminController : Controller
             Email = model.Email,
             UserName = model.Email,
             CompanyId = model.DefaultCompanyId,
-            Role = model.Role
+            Role = model.Role,
+            ManagerId = string.IsNullOrEmpty(model.ManagerId) ? null : model.ManagerId
         };
 
         var result = await _userManager.CreateAsync(user, model.Password);
@@ -187,6 +201,7 @@ public class AdminController : Controller
 
         ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
         ViewBag.Roles = await GetAllRoleNamesAsync();
+        ViewBag.Managers = await GetManagersAsync();
         return View(model);
     }
 
@@ -200,6 +215,8 @@ public class AdminController : Controller
 
         ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
         ViewBag.Roles = await GetAllRoleNamesAsync();
+        // Excludes the user being edited — a Manager can't report to themselves.
+        ViewBag.Managers = (await GetManagersAsync()).Where(m => m.Id != user.Id).ToList();
 
         var model = new UserEditVM
         {
@@ -209,7 +226,8 @@ public class AdminController : Controller
             Role            = user.Role,
             DefaultCompanyId = user.CompanyId,
             CompanyIds      = user.UserCompanies.Select(uc => uc.CompanyId).ToList(),
-            IsActive        = user.IsActive
+            IsActive        = user.IsActive,
+            ManagerId       = user.ManagerId
         };
         return View(model);
     }
@@ -223,10 +241,14 @@ public class AdminController : Controller
         if (!string.IsNullOrEmpty(model.Role) && !await _roleManager.RoleExistsAsync(model.Role))
             ModelState.AddModelError("Role", "Select a valid role.");
 
+        if (!string.IsNullOrEmpty(model.ManagerId) && model.ManagerId == model.Id)
+            ModelState.AddModelError("ManagerId", "A user cannot report to themselves.");
+
         if (!ModelState.IsValid)
         {
             ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
             ViewBag.Roles = await GetAllRoleNamesAsync();
+            ViewBag.Managers = (await GetManagersAsync()).Where(m => m.Id != model.Id).ToList();
             return View(model);
         }
 
@@ -239,6 +261,7 @@ public class AdminController : Controller
         user.Role      = model.Role;
         user.IsActive  = model.IsActive;
         user.CompanyId = model.DefaultCompanyId;
+        user.ManagerId = string.IsNullOrEmpty(model.ManagerId) ? null : model.ManagerId;
 
         // Update password if provided
         if (!string.IsNullOrWhiteSpace(model.NewPassword))
@@ -251,6 +274,7 @@ public class AdminController : Controller
                     ModelState.AddModelError("", e.Description);
                 ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
                 ViewBag.Roles = await GetAllRoleNamesAsync();
+                ViewBag.Managers = (await GetManagersAsync()).Where(m => m.Id != model.Id).ToList();
                 return View(model);
             }
         }
@@ -317,14 +341,16 @@ public class AdminController : Controller
 
         ViewBag.Roles = await GetAllRoleNamesAsync();
         ViewBag.Companies = await _db.Companies.Where(c => c.IsActive).OrderBy(c => c.CompanyName).ToListAsync();
+        ViewBag.Managers = await GetManagersAsync();
         return View(requests);
     }
 
     // companyId is now an Admin-only decision made here at approval — the
     // signer only ever typed a free-text OrganizationName on the public
-    // form, they never picked from our internal Companies list.
+    // form, they never picked from our internal Companies list. managerId
+    // ("Reports To") is the same kind of Admin-only call, same place.
     [HttpPost, ValidateAntiForgeryToken]
-    public async Task<IActionResult> ApproveSignup(int id, string role, int companyId)
+    public async Task<IActionResult> ApproveSignup(int id, string role, int companyId, string? managerId)
     {
         var request = await _db.SignupRequests.FindAsync(id);
         if (request == null) return NotFound();
@@ -368,7 +394,8 @@ public class AdminController : Controller
             PhoneNumber = request.PhoneNumber,
             CompanyId = companyId,
             Role = role,
-            PasswordHash = request.PasswordHash
+            PasswordHash = request.PasswordHash,
+            ManagerId = string.IsNullOrEmpty(managerId) ? null : managerId
         };
 
         var result = await _userManager.CreateAsync(user);
@@ -446,6 +473,7 @@ public class AdminController : Controller
             .Select(l => new PartyApprovalListVM
             {
                 LedgerId = l.LedgerId,
+                CompanyId = l.CompanyId,
                 LedgerName = l.LedgerName,
                 OutletName = l.OutletName,
                 GSTNo = l.GSTNo,
@@ -455,6 +483,7 @@ public class AdminController : Controller
                 State = l.State,
                 MobileNo = l.MobileNo,
                 ApprovalStatus = l.ApprovalStatus,
+                ZoneName = l.ZoneName,
                 LastSyncedAt = l.LastSyncedAt,
                 ReviewedAt = l.ReviewedAt,
                 ReviewedByName = l.ReviewedBy != null ? l.ReviewedBy.FullName : null,
@@ -464,11 +493,12 @@ public class AdminController : Controller
             .ToListAsync();
 
         ViewBag.SearchTerm = q;
+        ViewBag.Zones = await _db.Zones.Where(z => z.IsActive).OrderBy(z => z.ZoneName).ToListAsync();
         return View(parties);
     }
 
     [HttpPost, ValidateAntiForgeryToken]
-    public async Task<IActionResult> ApproveParty(int id)
+    public async Task<IActionResult> ApproveParty(int id, int? zoneId)
     {
         var ledger = await _db.Ledgers.Include(l => l.Company).FirstOrDefaultAsync(l => l.LedgerId == id);
         if (ledger == null) return NotFound();
@@ -481,6 +511,16 @@ public class AdminController : Controller
         {
             TempData["Error"] = "This party's company could not be found.";
             return RedirectToAction(nameof(PendingParties));
+        }
+
+        // Denormalized onto the Ledger as a plain string (not a ZoneId FK) —
+        // see Ledger.ZoneName for why. Silently ignored if zoneId doesn't
+        // resolve to a zone of this same ledger's company (stale dropdown,
+        // zone deactivated between page load and submit).
+        if (zoneId.HasValue)
+        {
+            var zone = await _db.Zones.FirstOrDefaultAsync(z => z.ZoneId == zoneId.Value && z.CompanyId == ledger.CompanyId);
+            if (zone != null) ledger.ZoneName = zone.ZoneName;
         }
 
         var admin = await _userManager.GetUserAsync(User);

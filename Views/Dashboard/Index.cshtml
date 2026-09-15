@@ -26,6 +26,19 @@
 
 <div id="syncMsg" class="alert py-2 small mb-3" style="display:none"></div>
 
+@if ((bool)ViewBag.HasTeam)
+{
+    <ul class="nav nav-pills mb-3" id="dashboardTabs">
+        <li class="nav-item">
+            <button type="button" class="nav-link active" id="tabBtnMine" onclick="switchDashboardTab('mine')">My Dashboard</button>
+        </li>
+        <li class="nav-item">
+            <button type="button" class="nav-link" id="tabBtnTeam" onclick="switchDashboardTab('team')">My Team</button>
+        </li>
+    </ul>
+}
+
+<div id="myDashboardTab">
 <!-- ── Stat cards ── -->
 @if (stats != null)
 {
@@ -88,22 +101,16 @@
     </div>
 
     <div class="row g-3 mb-3">
-        <div class="col-6 col-md-4">
+        <div class="col-6">
             <div class="card stat-card stat-purple p-3">
                 <div class="stat-label">This Month</div>
                 <div class="stat-val" style="color:#7209b7" id="statMonthValue">₹@(((decimal)stats.MonthValue).ToString("N0"))</div>
             </div>
         </div>
-        <div class="col-6 col-md-4">
+        <div class="col-6">
             <div class="card stat-card stat-teal p-3">
                 <div class="stat-label">Total Orders</div>
                 <div class="stat-val" style="color:#00838f" id="statTotal">@stats.Total</div>
-            </div>
-        </div>
-        <div class="col-12 col-md-4">
-            <div class="card p-3 h-100">
-                <div class="stat-label mb-2">Total Value (All Time)</div>
-                <div class="stat-val text-primary" id="statTotalValue">₹@(((decimal)stats.TotalValue).ToString("N0"))</div>
             </div>
         </div>
     </div>
@@ -164,6 +171,35 @@
         </div>
     </div>
 </div>
+</div> <!-- /myDashboardTab -->
+
+@if ((bool)ViewBag.HasTeam)
+{
+    <div id="myTeamTab" style="display:none">
+        <div class="card">
+            <div class="card-header">My Team</div>
+            <div class="table-responsive">
+                <table class="table table-sm mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Salesman</th>
+                            <th class="text-end">Today</th>
+                            <th class="text-end">Pending</th>
+                            <th class="text-end">Synced</th>
+                            <th class="text-end">Invoiced</th>
+                            <th class="text-end">Error</th>
+                            <th class="text-end">Total Orders</th>
+                            <th class="text-end">Total Value</th>
+                        </tr>
+                    </thead>
+                    <tbody id="teamStatsBody">
+                        <tr><td colspan="8" class="text-center py-4 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+}
 
 @section Scripts {
 <script>
@@ -232,7 +268,6 @@ function refreshDashboard() {
         $('#statError').text(s.error);
         $('#statMonthValue').text(fmtMoney(s.monthValue));
         $('#statTotal').text(s.total);
-        $('#statTotalValue').text(fmtMoney(s.totalValue));
 
         $('#recentOrdersList').html(renderRecentOrders(r.recentOrders));
 
@@ -246,6 +281,44 @@ function refreshDashboard() {
 }
 
 setInterval(refreshDashboard, 30000);
+
+// "My Team" tab — lazy-loaded on first switch (not on page load), so a
+// Manager with no reason to check it doesn't pay for the extra query.
+var teamStatsLoaded = false;
+
+function switchDashboardTab(tab) {
+    var mine = tab === 'mine';
+    $('#myDashboardTab').toggle(mine);
+    $('#myTeamTab').toggle(!mine);
+    $('#tabBtnMine').toggleClass('active', mine);
+    $('#tabBtnTeam').toggleClass('active', !mine);
+    if (!mine && !teamStatsLoaded) loadTeamStats();
+}
+
+function loadTeamStats() {
+    $.get('/Dashboard/TeamStats', function(rows) {
+        teamStatsLoaded = true;
+        if (!rows.length) {
+            $('#teamStatsBody').html('<tr><td colspan="8" class="text-center text-muted py-4 small">No one reports to you yet.</td></tr>');
+            return;
+        }
+        var html = rows.map(function(r) {
+            return '<tr>' +
+                '<td class="small">' + escHtml(r.userName) + '</td>' +
+                '<td class="text-end small">' + r.todayCount + '</td>' +
+                '<td class="text-end small">' + r.pending + '</td>' +
+                '<td class="text-end small">' + r.synced + '</td>' +
+                '<td class="text-end small">' + r.invoiced + '</td>' +
+                '<td class="text-end small' + (r.error > 0 ? ' text-danger fw-semibold' : '') + '">' + r.error + '</td>' +
+                '<td class="text-end small">' + r.total + '</td>' +
+                '<td class="text-end small fw-semibold">' + fmtMoney(r.totalValue) + '</td>' +
+                '</tr>';
+        }).join('');
+        $('#teamStatsBody').html(html);
+    }).fail(function() {
+        $('#teamStatsBody').html('<tr><td colspan="8" class="text-center text-danger py-3 small">Failed to load team stats.</td></tr>');
+    });
+}
 </script>
 @Html.AntiForgeryToken()
 }

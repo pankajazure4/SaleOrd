@@ -3,6 +3,7 @@
 @{
     var companies = ViewBag.Companies as IEnumerable<SaleOrd.Models.Domain.Company> ?? Enumerable.Empty<SaleOrd.Models.Domain.Company>();
     var roles = ViewBag.Roles as List<string> ?? new List<string> { "Admin", "Manager", "Salesman" };
+    var managers = ViewBag.Managers as List<SaleOrd.Models.Domain.AppUser> ?? new List<SaleOrd.Models.Domain.AppUser>();
     // Built-in roles get their familiar icon/description; anything an Admin
     // created via Manage Roles falls back to a generic look.
     var roleMeta = new Dictionary<string, (string Desc, string Icon, string Color)>
@@ -62,6 +63,16 @@
                             </label>
                         }
                     </div>
+                </div>
+                <div class="mt-3">
+                    <label asp-for="ManagerId" class="form-label">Reports To <small class="text-muted fw-normal">(only needed for a Salesman)</small></label>
+                    <select asp-for="ManagerId" class="form-select">
+                        <option value="">— None —</option>
+                        @foreach (var m in managers)
+                        {
+                            <option value="@m.Id">@m.FullName</option>
+                        }
+                    </select>
                 </div>
             </div>
 

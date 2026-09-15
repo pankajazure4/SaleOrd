@@ -236,11 +236,70 @@
                                 Left blank, FSSAI No. is saved here but not sent to Tally (no error either way).
                             </div>
                         </div>
+                        <div class="col-12">
+                            <label class="form-label small fw-semibold">Tally Zone UDF Field</label>
+                            <input type="text" name="tallyZoneUdfField" class="form-control form-control-sm"
+                                   value="@ViewBag.TallyZoneUdfField" placeholder="e.g. _UDF_788534682 (leave blank to skip)" />
+                            <div class="text-muted" style="font-size:11px">
+                                Same idea as the FSSAI UDF field above, but for the Zone an Admin picks at Party Approval
+                                (Admin &gt; Pending Parties). Left blank, the Zone is saved here but not sent to Tally.
+                            </div>
+                        </div>
                     </div>
                     <button type="submit" class="btn btn-primary btn-sm mt-3">
                         <i class="bi bi-save me-1"></i>Save Order Defaults
                     </button>
                 </form>
+            </div>
+        </div>
+
+        <!-- Zones -->
+        <div class="card mt-3">
+            <div class="card-header fw-semibold py-2">
+                <i class="bi bi-geo-alt me-2 text-primary"></i>Zones
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-3">The fixed list an Admin picks from at Party Approval (Admin &gt; Pending Parties &gt; Approve).</p>
+                <form method="post" asp-action="AddZone" class="row g-2 align-items-end mb-3">
+                    @Html.AntiForgeryToken()
+                    <div class="col-5">
+                        <label class="form-label small fw-semibold">Zone Name</label>
+                        <input type="text" name="zoneName" class="form-control form-control-sm" placeholder="e.g. North" required />
+                    </div>
+                    <div class="col-5">
+                        <label class="form-label small fw-semibold">Company</label>
+                        <select name="companyId" class="form-select form-select-sm" required>
+                            @foreach (var c in (ViewBag.Companies as IEnumerable<SaleOrd.Models.Domain.Company> ?? Enumerable.Empty<SaleOrd.Models.Domain.Company>()))
+                            {
+                                <option value="@c.CompanyId">@c.CompanyName</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="col-2">
+                        <button type="submit" class="btn btn-primary btn-sm w-100"><i class="bi bi-plus-lg"></i></button>
+                    </div>
+                </form>
+                @{ var zones = ViewBag.Zones as List<SaleOrd.Models.Domain.Zone> ?? new List<SaleOrd.Models.Domain.Zone>(); }
+                @if (zones.Count == 0)
+                {
+                    <div class="text-muted small">No zones yet.</div>
+                }
+                else
+                {
+                    <div class="d-flex flex-wrap gap-2">
+                        @foreach (var z in zones)
+                        {
+                            <form method="post" asp-action="ToggleZone" asp-route-id="@z.ZoneId" class="d-inline">
+                                @Html.AntiForgeryToken()
+                                <button type="submit" class="btn btn-sm @(z.IsActive ? "btn-outline-primary" : "btn-outline-secondary")"
+                                        title="@(z.IsActive ? "Click to deactivate" : "Click to activate")">
+                                    @z.ZoneName <small class="text-muted">(@z.Company?.CompanyName)</small>
+                                    @if (!z.IsActive) { <span> — inactive</span> }
+                                </button>
+                            </form>
+                        }
+                    </div>
+                }
             </div>
         </div>
 

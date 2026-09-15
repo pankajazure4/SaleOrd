@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SaleOrd.Data;
 
@@ -11,9 +12,11 @@ using SaleOrd.Data;
 namespace SaleOrd.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260914115617_AddManagerIdToAppUser")]
+    partial class AddManagerIdToAppUser
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -486,9 +489,6 @@ namespace SaleOrd.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("VATTINNo")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("ZoneName")
                         .HasColumnType("nvarchar(max)");
 
                     b.HasKey("LedgerId");
@@ -1086,32 +1086,6 @@ namespace SaleOrd.Migrations
                     b.ToTable("VoucherInventoryEntries");
                 });
 
-            modelBuilder.Entity("SaleOrd.Models.Domain.Zone", b =>
-                {
-                    b.Property<int>("ZoneId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("ZoneId"));
-
-                    b.Property<int>("CompanyId")
-                        .HasColumnType("int");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("bit");
-
-                    b.Property<string>("ZoneName")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(450)");
-
-                    b.HasKey("ZoneId");
-
-                    b.HasIndex("CompanyId", "ZoneName")
-                        .IsUnique();
-
-                    b.ToTable("Zones");
-                });
-
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>
                 {
                     b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole", null)
@@ -1371,17 +1345,6 @@ namespace SaleOrd.Migrations
                     b.Navigation("Ledger");
 
                     b.Navigation("StockItem");
-                });
-
-            modelBuilder.Entity("SaleOrd.Models.Domain.Zone", b =>
-                {
-                    b.HasOne("SaleOrd.Models.Domain.Company", "Company")
-                        .WithMany()
-                        .HasForeignKey("CompanyId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Company");
                 });
 
             modelBuilder.Entity("SaleOrd.Models.Domain.AppUser", b =>

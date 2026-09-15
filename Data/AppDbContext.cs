@@ -23,6 +23,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<VoucherInventoryEntry> VoucherInventoryEntries { get; set; }
     public DbSet<StockItemTaxSlab> StockItemTaxSlabs { get; set; }
     public DbSet<SignupRequest> SignupRequests { get; set; }
+    public DbSet<Zone> Zones { get; set; }
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -31,6 +32,15 @@ public class AppDbContext : IdentityDbContext<AppUser>
         builder.Entity<Ledger>()
             .HasIndex(l => new { l.CompanyId, l.LedgerName })
             .IsUnique();
+
+        builder.Entity<Zone>()
+            .HasIndex(z => new { z.CompanyId, z.ZoneName })
+            .IsUnique();
+        builder.Entity<Zone>()
+            .HasOne(z => z.Company)
+            .WithMany()
+            .HasForeignKey(z => z.CompanyId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         builder.Entity<StockItem>()
             .HasIndex(s => new { s.CompanyId, s.ItemName })
@@ -90,6 +100,17 @@ public class AppDbContext : IdentityDbContext<AppUser>
             .HasOne(u => u.Company)
             .WithMany(c => c.Users)
             .HasForeignKey(u => u.CompanyId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // Self-referencing (Salesman -> Manager) — Restrict same as every
+        // other FK here, and specifically necessary on a self-reference:
+        // SQL Server would otherwise refuse it outright (a cascade path from
+        // a table back to itself is exactly the "multiple cascade paths"
+        // case these Restrict calls exist to avoid elsewhere in this file).
+        builder.Entity<AppUser>()
+            .HasOne(u => u.Manager)
+            .WithMany()
+            .HasForeignKey(u => u.ManagerId)
             .OnDelete(DeleteBehavior.Restrict);
 
         // Prevent cascade cycles — SQL Server does not allow multiple cascade paths

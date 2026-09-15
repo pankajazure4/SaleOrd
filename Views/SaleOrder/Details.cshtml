@@ -212,7 +212,7 @@
             <i class="bi bi-pencil me-1"></i>Edit
         </a>
     }
-    @if (!Model.IsInvoiced && Model.Status.ToString() != "Synced")
+    @if (!Model.IsInvoiced)
     {
         <button type="button" class="btn btn-outline-danger" data-bs-toggle="modal" data-bs-target="#cancelOrderModal">
             <i class="bi bi-x-circle me-1"></i>Cancel Order
@@ -228,7 +228,11 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <p class="mb-0">This order will be moved back to draft state. If it is already synced, the server will block the action.</p>
+                <p class="mb-0">
+                    @(Model.Status.ToString() == "Synced"
+                        ? "This order has already been synced to Tally — cancelling it here will also cancel the corresponding voucher in Tally."
+                        : "This order will be marked as cancelled.")
+                </p>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">No</button>

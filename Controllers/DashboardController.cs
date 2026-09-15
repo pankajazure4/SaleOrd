@@ -38,9 +38,10 @@ public class DashboardController : Controller
         // Hide it entirely in that mode instead.
         ViewBag.IsAgentManaged = TallySyncMode.IsAgentManaged(_config);
 
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
         var query = _db.SaleOrders.Where(o => o.CompanyId == companyId);
-        if (user.Role == AppRoles.Salesman)
-            query = query.Where(o => o.CreatedById == user.Id);
+        if (visibleIds != null)
+            query = query.Where(o => visibleIds.Contains(o.CreatedById));
 
         var today      = DateTime.Today;
         var monthStart = new DateTime(today.Year, today.Month, 1);
@@ -71,7 +72,54 @@ public class DashboardController : Controller
         ViewBag.UserName     = user.FullName;
         ViewBag.Role         = user.Role;
 
+        // "My Team" tab — only for someone who actually has direct reports
+        // (AppUser.ManagerId pointing at them), not tied to the Role string
+        // itself. Never for Admin: Admin's one view above is already
+        // unrestricted, a separate team breakdown adds nothing for them.
+        ViewBag.HasTeam = user.Role != AppRoles.Admin
+            && await _db.Users.AnyAsync(u => u.ManagerId == user.Id);
+
         return View();
+    }
+
+    // Backs the "My Team" tab — one row per direct report, so a Manager can
+    // see their whole team's status at a glance without leaving the
+    // Dashboard for Reports > User-wise. Direct reports only (flat
+    // hierarchy, see AppUser.ManagerId) — this is deliberately a different,
+    // narrower query from UserVisibility (which folds the team into "my
+    // orders" for the main stat cards above); here each member needs their
+    // own row.
+    [HttpGet]
+    public async Task<IActionResult> TeamStats()
+    {
+        var (companyId, user) = await _resolver.ResolveAsync();
+        if (user == null) return Unauthorized();
+        if (!await _permSvc.HasAsync(user.Role, AppPermissions.Dashboard))
+            return Forbid();
+
+        var today = DateTime.Today;
+
+        var team = await (
+            from member in _db.Users
+            where member.ManagerId == user.Id
+            join order in _db.SaleOrders.Where(o => o.CompanyId == companyId)
+                on member.Id equals order.CreatedById into orders
+            select new
+            {
+                userId    = member.Id,
+                userName  = member.FullName,
+                todayCount = orders.Count(o => o.OrderDate == today),
+                pending    = orders.Count(o => o.Status == OrderStatus.Pending),
+                synced     = orders.Count(o => o.Status == OrderStatus.Synced),
+                invoiced   = orders.Count(o => o.IsInvoiced),
+                error      = orders.Count(o => o.Status == OrderStatus.Error),
+                total      = orders.Count(),
+                totalValue = orders.Sum(o => (decimal?)o.TotalAmount) ?? 0m
+            })
+            .OrderByDescending(m => m.totalValue)
+            .ToListAsync();
+
+        return Json(team);
     }
 
     // Polled periodically by Dashboard/Index.cshtml so stat cards, the recent
@@ -86,9 +134,10 @@ public class DashboardController : Controller
         if (!await _permSvc.HasAsync(user.Role, AppPermissions.Dashboard))
             return Forbid();
 
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
         var query = _db.SaleOrders.Where(o => o.CompanyId == companyId);
-        if (user.Role == AppRoles.Salesman)
-            query = query.Where(o => o.CreatedById == user.Id);
+        if (visibleIds != null)
+            query = query.Where(o => visibleIds.Contains(o.CreatedById));
 
         var today      = DateTime.Today;
         var monthStart = new DateTime(today.Year, today.Month, 1);
@@ -131,7 +180,7 @@ public class DashboardController : Controller
         {
             stats = stats ?? new { Total = 0, Pending = 0, Synced = 0, Error = 0, Invoiced = 0, TotalValue = 0m, TodayCount = 0, MonthValue = 0m },
             recentOrders,
-            lastSync = lastSync.HasValue ? lastSync.Value.ToString("dd MMM, h:mm tt") : "Never"
+            lastSync = lastSync.HasValue ? lastSync.Value.ToString("dd MMM yyyy") : "Never"
         });
     }
 }

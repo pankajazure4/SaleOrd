@@ -40,6 +40,11 @@ public class UserCreateVM
     public int DefaultCompanyId { get; set; }
 
     public List<int> CompanyIds { get; set; } = new();
+
+    // Who this user reports to — only meaningful for a Salesman (flat
+    // hierarchy, see AppUser.ManagerId), but left unrestricted here since an
+    // Admin may have a reason to set it on any role.
+    public string? ManagerId { get; set; }
 }
 
 public class UserListVM
@@ -50,6 +55,7 @@ public class UserListVM
     public string Role { get; set; } = string.Empty;
     public string Companies { get; set; } = string.Empty;
     public bool IsActive { get; set; }
+    public string? ManagerName { get; set; }
 }
 
 public class RoleRightsVM
@@ -74,6 +80,7 @@ public class UserEditVM
     public int DefaultCompanyId { get; set; }
     public List<int> CompanyIds { get; set; } = new();
     public bool IsActive { get; set; } = true;
+    public string? ManagerId { get; set; }
 
     [MinLength(6), DataType(DataType.Password)]
     public string? NewPassword { get; set; }
@@ -151,6 +158,7 @@ public class RoleListItemVM
 public class PartyApprovalListVM
 {
     public int LedgerId { get; set; }
+    public int CompanyId { get; set; }
     public string LedgerName { get; set; } = string.Empty;
     public string? OutletName { get; set; }
     public string? GSTNo { get; set; }
@@ -160,6 +168,7 @@ public class PartyApprovalListVM
     public string? State { get; set; }
     public string? MobileNo { get; set; }
     public LedgerApprovalStatus ApprovalStatus { get; set; }
+    public string? ZoneName { get; set; }
     public DateTime LastSyncedAt { get; set; }
     public DateTime? ReviewedAt { get; set; }
     public string? ReviewedByName { get; set; }

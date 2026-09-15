@@ -184,6 +184,19 @@
                                 <div class="d-flex justify-content-between"><span class="text-muted">State</span><span>@p.State</span></div>
                             }
                         </div>
+                        @{ var companyZones = (ViewBag.Zones as List<SaleOrd.Models.Domain.Zone> ?? new List<SaleOrd.Models.Domain.Zone>())
+                               .Where(z => z.CompanyId == p.CompanyId).ToList(); }
+                        @if (companyZones.Count > 0)
+                        {
+                            <label class="form-label small fw-semibold">Zone</label>
+                            <select name="zoneId" class="form-select form-select-sm mb-2">
+                                <option value="">— None —</option>
+                                @foreach (var z in companyZones)
+                                {
+                                    <option value="@z.ZoneId">@z.ZoneName</option>
+                                }
+                            </select>
+                        }
                         <div class="text-muted small">
                             This makes the party usable in Sale Orders immediately. It will be pushed to Tally as a new ledger master by the sync agent shortly after.
                         </div>

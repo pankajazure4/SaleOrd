@@ -50,6 +50,15 @@ public class Ledger
     public bool IsManuallyCreated { get; set; }
     public DateTime? TallyPushedAt { get; set; }
 
+    // Set by an Admin at Party Approval (Admin > Pending Parties), picked
+    // from that company's Zone list (see Zone) — denormalized to a plain
+    // string here on purpose rather than a ZoneId FK, so the Agent (which
+    // reads this Ledger row via a flat Dapper SELECT *, not EF) doesn't need
+    // any awareness of the Zones table at all. Pushed to Tally as a UDF
+    // field if Settings > Order Defaults > Tally Zone UDF Field is set (see
+    // TallyService.PushLedgerAsync), same mechanism as FSSAINo.
+    public string? ZoneName { get; set; }
+
     // Financial
     public decimal CreditLimit { get; set; }
     public string? CreditPeriod { get; set; }     // Tally's "Default credit period", e.g. "1 Days"

@@ -349,6 +349,7 @@ public class SyncOrchestrator
         var roundOffLedger = Setting("TaxLedgerRoundOff", "Round Off");
         var voucherType    = Setting("DefaultVoucherType", "Sales Order");
         var fssaiUdfField  = settings.TryGetValue("TallyFssaiUdfField", out var fu) ? fu : null;
+        var zoneUdfField   = settings.TryGetValue("TallyZoneUdfField", out var zu) ? zu : null;
 
         int pushed = 0, failed = 0, invoiced = 0, partiesPushed = 0, partiesFailed = 0;
         var companyList = companies.ToList();
@@ -384,6 +385,38 @@ public class SyncOrchestrator
                     await Task.Delay(800);
             }
 
+            // Orders cancelled in the app after already reaching Tally —
+            // still owe Tally an ACTION="Cancel" push (see
+            // GetCancelPendingOrdersAsync). Separate loop/query from the
+            // pending-orders one above on purpose: cancelling flips Status
+            // to Cancelled immediately in the app, so these never show up
+            // in the Status=1/Pending queue at all.
+            _logger.Info($"[{company.CompanyName}] Loading orders awaiting Tally cancellation...");
+            var cancelPending = await _sql.GetCancelPendingOrdersAsync(_connString, company.CompanyId);
+            if (cancelPending.Count > 0)
+            {
+                _logger.Info($"[{company.CompanyName}] {cancelPending.Count} order(s) awaiting Tally cancellation.");
+                for (int i = 0; i < cancelPending.Count; i++)
+                {
+                    var order = cancelPending[i];
+                    _logger.Info($"[{company.CompanyName}] Cancelling order {order.OrderNo} in Tally...");
+                    var (success, message) = await _tally.PushSaleOrderAsync(
+                        _config.TallyUrl, order, company.TallyCompanyName,
+                        salesLedger, igstLedger, cgstLedger, sgstLedger,
+                        roundOffLedger, isAlter: true, voucherType, isCancel: true);
+
+                    await _sql.UpdateOrderCancelPushResultAsync(_connString, order.SaleOrderId, success, message);
+                    await _sql.InsertSyncLogAsync(_connString, company.CompanyId, "OrderCancelPush", success,
+                        $"Order {order.OrderNo}: {message}");
+
+                    if (success) _logger.Info($"Cancelled {order.OrderNo} in Tally");
+                    else _logger.Warn($"Cancel push failed for {order.OrderNo}: {message}");
+
+                    if (i < cancelPending.Count - 1)
+                        await Task.Delay(800);
+                }
+            }
+
             // Manually-created parties approved in Admin > Pending Parties —
             // the web app only ever flips ApprovalStatus there (it has no
             // direct route to this client's Tally instance), so this Agent
@@ -397,7 +430,7 @@ public class SyncOrchestrator
                 foreach (var party in pendingParties)
                 {
                     var (success, message) = await _tally.PushLedgerAsync(
-                        _config.TallyUrl, party, company.TallyCompanyName, fssaiUdfField);
+                        _config.TallyUrl, party, company.TallyCompanyName, fssaiUdfField, zoneUdfField);
 
                     await _sql.InsertSyncLogAsync(_connString, company.CompanyId, "PartyApproval", success,
                         $"Party \"{party.LedgerName}\" (LedgerId {party.LedgerId}): {message}");

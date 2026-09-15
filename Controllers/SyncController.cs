@@ -235,7 +235,7 @@ public class SyncController : Controller
 
         return Ok(new
         {
-            lastSync = company.LastMasterSyncAt?.ToString("dd MMM, h:mm tt") ?? "Never",
+            lastSync = company.LastMasterSyncAt?.ToString("dd MMM yyyy") ?? "Never",
             pendingCount,
             errorCount
         });

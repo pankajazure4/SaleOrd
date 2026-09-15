@@ -565,14 +565,21 @@ public class TallyService
         string sgstLedger   = "SGST",
         string roundOffLedger = "Round Off",
         bool   isAlter      = false,
-        string voucherType  = "Sales Order")
+        string voucherType  = "Sales Order",
+        bool   isCancel     = false)
     {
-        var action     = isAlter ? "Alter" : "Create";
+        // ACTION="Cancel" is Tally's XML-import equivalent of Alt+X in the
+        // UI — it re-sends the same voucher (located via REMOTEID, like
+        // Alter) but marks it cancelled instead of overwriting its content.
+        var action     = isCancel ? "Cancel" : (isAlter ? "Alter" : "Create");
         var dateStr    = order.OrderDate.ToString("yyyyMMdd");
         var grandTotal = order.GrandTotal > 0 ? order.GrandTotal : order.TotalAmount;
-        var narration  = string.IsNullOrWhiteSpace(order.Narration)
-            ? $"Ref: {order.OrderNo}"
-            : $"Ref: {order.OrderNo} | {order.Narration}";
+        // Narration is now just the salesman's own remark, nothing
+        // concatenated in front of it — the SO number used to be prefixed
+        // here as "Ref: SO-xxx | <remark>", but the client wants only what
+        // the salesman actually typed. (BASICORDERREF/REFERENCE already
+        // carry the SO number/creator elsewhere on the voucher.)
+        var narration  = order.Narration ?? "";
         var remoteId   = $"saleord{order.SaleOrderId:D7}";
         var dueDate    = order.DeliveryDate ?? order.OrderDate;
 
@@ -755,6 +762,26 @@ public class TallyService
         var gstRegistrationType = string.IsNullOrEmpty(partyGstin) ? "Unregistered" : "Regular";
         var hasDiscounts = order.Items.Any(i => i.Discount > 0) ? "Yes" : "No";
 
+        // BASICORDERTERMS / BASICORDERREF: client wants the SO's punch time
+        // and the salesman who punched it visible directly on the Tally
+        // voucher. "6.30 Pm" (Tally's own order-terms style — no leading
+        // zero on the hour, dot separator, "Am"/"Pm" title-case) rather
+        // than .NET's default "tt" ("PM"). (Mirrored from the web app's
+        // TallyService.)
+        var createdTime = order.CreatedAt == default ? order.OrderDate : order.CreatedAt;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        // "%h" (not bare "h") — a single-char format string is interpreted
+        // as a *standard* format specifier by .NET, and "h" isn't one of
+        // those, so DateTime.ToString("h", ...) throws FormatException at
+        // runtime ("Input string was not in a correct format") even though
+        // it compiles fine. "%h" forces it to be read as the custom hour
+        // specifier instead.
+        var orderTimeStr = $"{createdTime.ToString("%h", inv)}.{createdTime.ToString("mm", inv)} {(createdTime.Hour < 12 ? "Am" : "Pm")}";
+        var orderTermsXml = $@"
+            <BASICORDERTERMS.LIST TYPE=""String"">
+              <BASICORDERTERMS>{Escape(orderTimeStr)}</BASICORDERTERMS>
+            </BASICORDERTERMS.LIST>";
+
         var xml = $@"<ENVELOPE>
   <HEADER>
     <TALLYREQUEST>Import Data</TALLYREQUEST>
@@ -769,7 +796,7 @@ public class TallyService
       </REQUESTDESC>
       <REQUESTDATA>
         <TALLYMESSAGE xmlns:UDF=""TallyUDF"">
-          <VOUCHER REMOTEID=""{remoteId}"" VCHTYPE=""{Escape(voucherType)}"" ACTION=""{action}"" OBJVIEW=""Invoice Voucher View"">{addressXml}
+          <VOUCHER REMOTEID=""{remoteId}"" VCHTYPE=""{Escape(voucherType)}"" ACTION=""{action}"" OBJVIEW=""Invoice Voucher View"">{addressXml}{orderTermsXml}
             <DATE>{dateStr}</DATE>
             <EFFECTIVEDATE>{dateStr}</EFFECTIVEDATE>
             <NARRATION>{Escape(narration)}</NARRATION>
@@ -791,6 +818,7 @@ public class TallyService
             <PARTYMAILINGNAME>{Escape(order.LedgerName)}</PARTYMAILINGNAME>
             <BASICBUYERNAME>{Escape(order.LedgerName)}</BASICBUYERNAME>
             <REFERENCE>{Escape(order.OrderNo)}</REFERENCE>
+            {(string.IsNullOrWhiteSpace(order.CreatedByName) ? "" : $"<BASICORDERREF>{Escape(order.CreatedByName)}</BASICORDERREF>")}
             <ISINVOICE>No</ISINVOICE>
             <ISOPTIONAL>No</ISOPTIONAL>
             <HASDISCOUNTS>{hasDiscounts}</HASDISCOUNTS>
@@ -1006,7 +1034,7 @@ public class TallyService
     // Agent is now the only thing that actually talks to Tally for anything,
     // parties included. See SyncOrchestrator's manual-party-push step.
     public async Task<(bool Success, string Message)> PushLedgerAsync(
-        string tallyUrl, Ledger ledger, string companyName, string? fssaiUdfField = null)
+        string tallyUrl, Ledger ledger, string companyName, string? fssaiUdfField = null, string? zoneUdfField = null)
     {
         var today = DateTime.Today.ToString("yyyyMMdd");
         var hasGstin = !string.IsNullOrWhiteSpace(ledger.GSTNo);
@@ -1019,6 +1047,17 @@ public class TallyService
             <UDF:{udfFieldName}.LIST DESC="""" ISLIST=""YES"" TYPE=""String"">
               <UDF:{udfFieldName} DESC="""">{Escape(ledger.FSSAINo)}</UDF:{udfFieldName}>
             </UDF:{udfFieldName}.LIST>";
+
+        // Same mechanism, independent field — a ledger can carry both a
+        // FSSAI UDF and a Zone UDF at once, each optional/independently
+        // configured in Settings > Order Defaults.
+        var zoneUdfFieldName = zoneUdfField?.Trim().Replace("UDF:", "", StringComparison.OrdinalIgnoreCase).Trim();
+        var zoneUdfXml = string.IsNullOrWhiteSpace(zoneUdfFieldName) || string.IsNullOrWhiteSpace(ledger.ZoneName)
+            ? ""
+            : $@"
+            <UDF:{zoneUdfFieldName}.LIST DESC="""" ISLIST=""YES"" TYPE=""String"">
+              <UDF:{zoneUdfFieldName} DESC="""">{Escape(ledger.ZoneName)}</UDF:{zoneUdfFieldName}>
+            </UDF:{zoneUdfFieldName}.LIST>";
 
         var addressLines = (ledger.Address ?? "")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -1067,7 +1106,7 @@ public class TallyService
             {/* BILLCREDITPERIOD, not CreditPeriod — same field name the web
                app's GetLedgersAsync already confirmed against a real ledger
                export (see its comment there). */
-             (string.IsNullOrWhiteSpace(ledger.CreditPeriod) ? "" : $"<BILLCREDITPERIOD>{Escape(ledger.CreditPeriod)}</BILLCREDITPERIOD>")}{gstRegDetailsXml}{mailingDetailsXml}{udfXml}
+             (string.IsNullOrWhiteSpace(ledger.CreditPeriod) ? "" : $"<BILLCREDITPERIOD>{Escape(ledger.CreditPeriod)}</BILLCREDITPERIOD>")}{gstRegDetailsXml}{mailingDetailsXml}{udfXml}{zoneUdfXml}
           </LEDGER>
         </TALLYMESSAGE>
       </REQUESTDATA>

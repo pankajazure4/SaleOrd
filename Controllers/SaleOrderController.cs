@@ -38,8 +38,9 @@ public class SaleOrderController : Controller
 
         var query = _db.SaleOrders.Where(o => o.CompanyId == companyId);
 
-        if (user.Role == AppRoles.Salesman)
-            query = query.Where(o => o.CreatedById == user.Id);
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        if (visibleIds != null)
+            query = query.Where(o => visibleIds.Contains(o.CreatedById));
 
         // "Invoiced" isn't a real OrderStatus value — it's Status==Synced
         // with IsInvoiced also true, shown as its own status everywhere the
@@ -121,8 +122,9 @@ public class SaleOrderController : Controller
 
         var query = _db.SaleOrders.Where(o => o.CompanyId == companyId);
 
-        if (user.Role == AppRoles.Salesman)
-            query = query.Where(o => o.CreatedById == user.Id);
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        if (visibleIds != null)
+            query = query.Where(o => visibleIds.Contains(o.CreatedById));
 
         // Same "Invoiced" pseudo-status handling as Index() — see its comment.
         if (string.Equals(status, "Invoiced", StringComparison.OrdinalIgnoreCase))
@@ -280,7 +282,8 @@ public class SaleOrderController : Controller
 
         if (order == null) return NotFound();
 
-        if (user.Role == AppRoles.Salesman && order.CreatedById != user.Id)
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        if (visibleIds != null && !visibleIds.Contains(order.CreatedById))
             return Forbid();
 
         ViewBag.CanPrint = await _permSvc.HasAsync(user.Role, AppPermissions.PrintSaleOrder);
@@ -296,19 +299,30 @@ public class SaleOrderController : Controller
         var order = await _db.SaleOrders.FindAsync(id);
         if (order == null || order.CompanyId != companyId) return NotFound();
 
-        if (order.Status == OrderStatus.Synced)
+        // Once it's actually become a Tally Invoice, cancelling here would
+        // leave the app and Tally permanently disagreeing — Tally has no
+        // "cancel a Sales Order that's already been invoiced" operation
+        // that makes sense to auto-push. A Synced-but-not-yet-invoiced order
+        // CAN be cancelled — that now also pushes an ACTION="Cancel" to
+        // Tally for the corresponding voucher (see CancelPushPending below).
+        if (order.IsInvoiced)
         {
-            TempData["Error"] = "Cannot cancel an order already synced to Tally.";
+            TempData["Error"] = "Cannot cancel an order that has already been invoiced in Tally.";
             return RedirectToAction("Details", new { id });
         }
 
+        var wasSyncedToTally = !string.IsNullOrEmpty(order.TallyVoucherNo);
         order.Status = OrderStatus.Cancelled;
+        if (wasSyncedToTally)
+            order.CancelPushPending = true;
         await _db.SaveChangesAsync();
 
         await _activity.LogAsync(user.Id, user.FullName, user.Role, ActivityActions.CancelOrder,
             "SaleOrder", order.SaleOrderId, $"Cancelled {order.OrderNo}", companyId);
 
-        TempData["Success"] = "Order cancelled.";
+        TempData["Success"] = wasSyncedToTally
+            ? "Order cancelled. It will be cancelled in Tally by the sync agent shortly."
+            : "Order cancelled.";
         return RedirectToAction("Index");
     }
 
@@ -334,7 +348,8 @@ public class SaleOrderController : Controller
 
         if (order == null) return NotFound();
 
-        if (user.Role == AppRoles.Salesman && order.CreatedById != user.Id)
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        if (visibleIds != null && !visibleIds.Contains(order.CreatedById))
             return Forbid();
 
         // Invoice lock — permanent
@@ -429,7 +444,8 @@ public class SaleOrderController : Controller
             return NotFound();
         }
 
-        if (user.Role == AppRoles.Salesman && order.CreatedById != user.Id)
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        if (visibleIds != null && !visibleIds.Contains(order.CreatedById))
         {
             if (isAjax) return Json(new { success = false, message = "Access denied." });
             return Forbid();
@@ -535,7 +551,8 @@ public class SaleOrderController : Controller
 
         if (order == null) return NotFound();
 
-        if (user.Role == AppRoles.Salesman && order.CreatedById != user.Id)
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        if (visibleIds != null && !visibleIds.Contains(order.CreatedById))
             return Forbid();
 
         if (order.Status == OrderStatus.Synced)
@@ -566,7 +583,8 @@ public class SaleOrderController : Controller
 
         if (order == null) return NotFound();
 
-        if (user.Role == AppRoles.Salesman && order.CreatedById != user.Id)
+        var visibleIds = await UserVisibility.VisibleCreatorIdsAsync(_db, user);
+        if (visibleIds != null && !visibleIds.Contains(order.CreatedById))
             return Forbid();
 
         await _activity.LogAsync(user.Id, user.FullName, user.Role, ActivityActions.PrintOrder,

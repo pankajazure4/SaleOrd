@@ -137,6 +137,55 @@ public class OrderPushJob : BackgroundService
 
         if (pendingOrders.Any())
             await db.SaveChangesAsync();
+
+        // Orders cancelled after already reaching Tally (TallyVoucherNo set)
+        // still owe Tally an ACTION="Cancel" push — see CancelPushPending on
+        // the model. Separate query from the Pending loop above on purpose:
+        // cancelling flips Status to Cancelled immediately in the app, so
+        // these never show up in the Status=1/Pending query at all.
+        // (Mirrored from SaleOrd.SyncAgent's SyncOrchestrator.)
+        var allCancelPending = await db.SaleOrders
+            .Include(o => o.Items)
+            .Include(o => o.Company)
+            .Include(o => o.Ledger)
+            .Where(o => o.Status == OrderStatus.Cancelled && o.CancelPushPending)
+            .ToListAsync();
+
+        var cancelPending = allCancelPending
+            .Where(o => o.Company != null && o.Company.IsActive &&
+                openInTally.Any(open => string.Equals(
+                    open.Trim(), o.Company.TallyCompanyName.Trim(), StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        for (int i = 0; i < cancelPending.Count; i++)
+        {
+            var order = cancelPending[i];
+            var companyName = order.Company?.TallyCompanyName ?? string.Empty;
+            _logger.LogInformation("Cancelling order {OrderNo} in Tally", order.OrderNo);
+
+            var (success, message) = await tallyService.PushSaleOrderAsync(
+                tallyUrl, order, companyName,
+                salesLedger, igstLedger, cgstLedger, sgstLedger,
+                roundOffLedger, isAlter: true, voucherType, isCancel: true);
+
+            order.CancelPushPending = !success;
+            order.CancelPushedAt = success ? DateTime.Now : null;
+            order.SyncError = success ? null : message;
+
+            db.SyncLogs.Add(new SyncLog
+            {
+                CompanyId = order.CompanyId,
+                SyncType = "OrderCancelPush",
+                IsSuccess = success,
+                Message = $"Order {order.OrderNo}: {message}"
+            });
+
+            if (i < cancelPending.Count - 1)
+                await Task.Delay(800);
+        }
+
+        if (cancelPending.Any())
+            await db.SaveChangesAsync();
     }
 
     private async Task CheckInvoiceStatusAsync()
